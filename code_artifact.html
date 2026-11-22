@@ -597,6 +597,9 @@
         const AUTH_SESSION_KEY = 'classroom_score_logged_in_email_v1';
         const SHARED_EXCEL_FILENAME = 'scores.xlsx'; // 與 index.html 放在同一層的固定 Excel 檔名
         const GITHUB_SYNC_KEY = 'classroom_github_excel_sync_cfg_v1';
+        const DEFAULT_GH_OWNER = 'a008548-skh';
+        const DEFAULT_GH_REPO = 'nycuihha15';
+        const DEFAULT_GH_BRANCH = 'main';
         let sharedExcelLoaded = false;
         let sharedExcelLastSignature = '';
         let sharedExcelPollTimer = null;
@@ -672,9 +675,9 @@
                 const raw = localStorage.getItem(GITHUB_SYNC_KEY);
                 const saved = raw ? JSON.parse(raw) : {};
 
-                const owner = (urlOwner || saved.owner || '').trim();
-                const repo = (urlRepo || saved.repo || '').trim();
-                const branch = (urlBranch || saved.branch || 'main').trim();
+                const owner = (urlOwner || saved.owner || DEFAULT_GH_OWNER).trim();
+                const repo = (urlRepo || saved.repo || DEFAULT_GH_REPO).trim();
+                const branch = (urlBranch || saved.branch || DEFAULT_GH_BRANCH).trim();
                 const token = (saved.token || '').trim();
 
                 if (!owner && !repo && !token) return null;
@@ -739,7 +742,8 @@
                 });
 
                 if (!putRes.ok) {
-                    throw new Error(`GitHub API 回應錯誤 (${putRes.status})`);
+                    const errData = await putRes.json().catch(() => ({}));
+                    throw new Error(errData.message || `GitHub API 回應錯誤 (${putRes.status})`);
                 }
                 excelSyncStatus = 'synced';
                 updateExcelSyncUI();
@@ -748,6 +752,7 @@
                 console.error('直接更新同層 GitHub scores.xlsx 失敗:', err);
                 excelSyncStatus = 'error';
                 updateExcelSyncUI();
+                showToast(`寫入 scores.xlsx 失敗：${err.message}`, 'error');
                 return false;
             }
         }
@@ -1727,9 +1732,9 @@
             }
 
             const existing = getGitHubSyncConfig() || {};
-            let defaultOwner = existing.owner || '';
-            let defaultRepo = existing.repo || '';
-            if (!defaultOwner && location.hostname.endsWith('.github.io')) {
+            let defaultOwner = existing.owner || DEFAULT_GH_OWNER;
+            let defaultRepo = existing.repo || DEFAULT_GH_REPO;
+            if (!existing.owner && location.hostname.endsWith('.github.io')) {
                 defaultOwner = location.hostname.replace('.github.io', '');
                 const pathParts = location.pathname.split('/').filter(Boolean);
                 if (pathParts.length > 0) defaultRepo = pathParts[0];
@@ -1749,7 +1754,7 @@
                 <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-2">
                     <input type="text" id="gh-sync-owner" value="${escapeHTML(defaultOwner)}" placeholder="GitHub 帳號 (例: a008548-skh)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
                     <input type="text" id="gh-sync-repo" value="${escapeHTML(defaultRepo)}" placeholder="專案名稱 (例: nycuihha15)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
-                    <input type="password" id="gh-sync-token" value="${escapeHTML(existing.token || '')}" placeholder="GitHub Token (ghp_...)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
+                    <input type="password" id="gh-sync-token" value="${escapeHTML(existing.token || '')}" placeholder="GitHub Token (github_pat_... / ghp_...)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
                     <button onclick="handleSaveGitHubSyncSettings()" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition active:scale-95">
                         儲存並寫入 scores.xlsx
                     </button>
