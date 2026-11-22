@@ -69,7 +69,7 @@
                 </div>
                 <div>
                     <h1 class="text-lg sm:text-xl font-black tracking-tight text-white flex items-center gap-2">
-                        班級分組積分戰況板
+                        班級分組積分板
                         <span id="auth-status-badge" class="text-xs bg-slate-800 text-slate-300 border border-slate-600 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
                             <i data-lucide="eye" class="w-3.5 h-3.5 text-sky-400"></i>
                             <span>唯讀檢視模式</span>
@@ -595,19 +595,19 @@
         // ==================== 狀態與資料結構 ====================
         const STORAGE_KEY = 'classroom_4groups_score_system_v3';
         const AUTH_SESSION_KEY = 'classroom_score_logged_in_email_v1';
-        const SHARED_EXCEL_FILENAME = 'scores.xlsx'; // 與 index.html 放在同一資料夾的固定 Excel 檔名
+        const SHARED_EXCEL_FILENAME = 'scores.xlsx'; // 與 index.html 放在同一層的固定 Excel 檔名
+        const GITHUB_SYNC_KEY = 'classroom_github_excel_sync_cfg_v1';
         let sharedExcelLoaded = false;
-        let sharedExcelLastModified = '';
+        let sharedExcelLastSignature = '';
+        let sharedExcelPollTimer = null;
 
         // 預設授權白名單（管理員登入後可自由增刪）
         const DEFAULT_AUTHORIZED_EMAILS = [
             'teacher@school.edu.tw',
-            'admin@gmail.com',
-            'teacher@nycu.edu.tw',
-            'admin@nycu.edu.tw'
+            'admin'
         ];
 
-        // 預設四組名單（共 19 位同學，初始分數 0 分）
+        // 預設四組名單（共19人）
         const DEFAULT_STATE = {
             groups: [
                 { id: 0, name: '第一組', color: 'blue' },
@@ -621,18 +621,15 @@
                 { id: 's3', name: '張祐誠', groupId: 0, score: 0 },
                 { id: 's4', name: '陳王彗玫', groupId: 0, score: 0 },
                 { id: 's5', name: '范昱瑄', groupId: 0, score: 0 },
-
                 { id: 's6', name: '李依鈴', groupId: 1, score: 0 },
                 { id: 's7', name: '曾湘畇', groupId: 1, score: 0 },
                 { id: 's8', name: '陳羿璇', groupId: 1, score: 0 },
                 { id: 's9', name: '陳怡萍', groupId: 1, score: 0 },
                 { id: 's10', name: '楊雨璇', groupId: 1, score: 0 },
-
                 { id: 's11', name: '周書涵', groupId: 2, score: 0 },
                 { id: 's12', name: '吳筱筠', groupId: 2, score: 0 },
                 { id: 's13', name: '鄭世裕', groupId: 2, score: 0 },
                 { id: 's14', name: '吳燕鈴', groupId: 2, score: 0 },
-
                 { id: 's15', name: '殷銘', groupId: 3, score: 0 },
                 { id: 's16', name: '陳淑民', groupId: 3, score: 0 },
                 { id: 's17', name: '劉家多', groupId: 3, score: 0 },
@@ -645,72 +642,110 @@
         };
 
         let appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
-        let currentUserEmail = sessionStorage.getItem(AUTH_SESSION_KEY) || '';
+        let currentUserEmail = null;
         let isMultiSelectMode = false;
         let selectedStudentIds = new Set();
-        let activeModalTarget = null; // { type: 'student'|'group'|'selected', id: string|number }
+        let currentModalContext = null;
 
-        // 四組配色設定
-        const GROUP_THEMES = [
-            {
-                border: 'border-blue-500/40',
-                headerBg: 'bg-gradient-to-br from-blue-950/90 to-slate-900',
-                badge: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
-                title: 'text-blue-400',
-                btn: 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/40',
-                cardHover: 'hover:border-blue-400/70 hover:bg-slate-800/90',
-                scoreText: 'text-blue-300'
-            },
-            {
-                border: 'border-emerald-500/40',
-                headerBg: 'bg-gradient-to-br from-emerald-950/90 to-slate-900',
-                badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-                title: 'text-emerald-400',
-                btn: 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40',
-                cardHover: 'hover:border-emerald-400/70 hover:bg-slate-800/90',
-                scoreText: 'text-emerald-300'
-            },
-            {
-                border: 'border-amber-500/40',
-                headerBg: 'bg-gradient-to-br from-amber-950/90 to-slate-900',
-                badge: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-                title: 'text-amber-400',
-                btn: 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-900/40',
-                cardHover: 'hover:border-amber-400/70 hover:bg-slate-800/90',
-                scoreText: 'text-amber-300'
-            },
-            {
-                border: 'border-purple-500/40',
-                headerBg: 'bg-gradient-to-br from-purple-950/90 to-slate-900',
-                badge: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
-                title: 'text-purple-400',
-                btn: 'bg-purple-600 hover:bg-purple-500 text-white shadow-purple-900/40',
-                cardHover: 'hover:border-purple-400/70 hover:bg-slate-800/90',
-                scoreText: 'text-purple-300'
-            }
-        ];
-
-        // ==================== IndexedDB 與 File System Access API 自動寫入 Excel ====================
-        const IDB_NAME = 'ClassroomExcelHandleDB_v1';
-        const IDB_STORE = 'handles';
+        // 本機 File System Access API 狀態
         let boundExcelHandle = null;
         let cachedExcelHandle = null;
-        let excelSyncStatus = 'unbound'; // 'unbound' | 'pending_permission' | 'synced' | 'syncing' | 'error'
+        let excelSyncStatus = 'idle'; // idle | syncing | synced | error
 
         function canUseNativeFilePicker() {
             try {
-                return typeof window.showSaveFilePicker === 'function' && window.self === window.top;
+                return (typeof window.showOpenFilePicker === 'function' || typeof window.showSaveFilePicker === 'function') && window.self === window.top;
             } catch (e) {
+                return false;
+            }
+        }
+
+        // ==================== GitHub 同層 scores.xlsx 直寫設定 (線上網頁免下載直接更新遠端同層檔案) ====================
+        function getGitHubSyncConfig() {
+            try {
+                const raw = localStorage.getItem(GITHUB_SYNC_KEY);
+                return raw ? JSON.parse(raw) : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function saveGitHubSyncConfig(owner, repo, branch, token) {
+            const cfg = {
+                owner: (owner || '').trim(),
+                repo: (repo || '').trim(),
+                branch: (branch || 'main').trim(),
+                token: (token || '').trim()
+            };
+            if (!cfg.owner || !cfg.repo || !cfg.token) {
+                localStorage.removeItem(GITHUB_SYNC_KEY);
+                return null;
+            }
+            localStorage.setItem(GITHUB_SYNC_KEY, JSON.stringify(cfg));
+            return cfg;
+        }
+
+        async function pushExcelToGitHubSameFolder() {
+            const cfg = getGitHubSyncConfig();
+            if (!cfg || !cfg.token || !window.XLSX) return false;
+            try {
+                excelSyncStatus = 'syncing';
+                updateExcelSyncUI();
+
+                const wb = buildExcelWorkbook();
+                const base64Content = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+                const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}`;
+
+                // 取得現有 scores.xlsx 的 sha（若已存在則為覆寫更新）
+                let sha = undefined;
+                const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(cfg.branch)}`, {
+                    headers: {
+                        'Authorization': `Bearer ${cfg.token}`,
+                        'Accept': 'application/vnd.github+json'
+                    }
+                });
+                if (getRes.ok) {
+                    const existing = await getRes.json();
+                    sha = existing.sha;
+                }
+
+                const putRes = await fetch(apiUrl, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${cfg.token}`,
+                        'Accept': 'application/vnd.github+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: `自動更新 ${SHARED_EXCEL_FILENAME} (${new Date().toLocaleString('zh-TW')})`,
+                        content: base64Content,
+                        branch: cfg.branch,
+                        ...(sha ? { sha } : {})
+                    })
+                });
+
+                if (!putRes.ok) {
+                    throw new Error(`GitHub API 回應錯誤 (${putRes.status})`);
+                }
+                excelSyncStatus = 'synced';
+                updateExcelSyncUI();
+                return true;
+            } catch (err) {
+                console.error('直接更新同層 GitHub scores.xlsx 失敗:', err);
+                excelSyncStatus = 'error';
+                updateExcelSyncUI();
                 return false;
             }
         }
 
         function openHandleDB() {
             return new Promise((resolve, reject) => {
-                if (!window.indexedDB) return reject(new Error('IndexedDB unavailable'));
-                const req = indexedDB.open(IDB_NAME, 1);
+                if (!window.indexedDB) return reject(new Error('不支援 IndexedDB'));
+                const req = indexedDB.open('ClassroomScoreExcelHandlesDB', 1);
                 req.onupgradeneeded = () => {
-                    req.result.createObjectStore(IDB_STORE);
+                    if (!req.result.objectStoreNames.contains('handles')) {
+                        req.result.createObjectStore('handles');
+                    }
                 };
                 req.onsuccess = () => resolve(req.result);
                 req.onerror = () => reject(req.error);
@@ -720,56 +755,28 @@
         async function saveExcelHandleToIDB(handle) {
             try {
                 const db = await openHandleDB();
-                const tx = db.transaction(IDB_STORE, 'readwrite');
-                tx.objectStore(IDB_STORE).put(handle, 'bound_excel');
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction('handles', 'readwrite');
+                    tx.objectStore('handles').put(handle, 'boundExcel');
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
             } catch (e) {
-                console.warn('儲存 Excel Handle 失敗:', e);
+                console.warn('儲存檔案控制碼失敗:', e);
             }
         }
 
-        async function loadExcelHandleFromIDB() {
+        async function getExcelHandleFromIDB() {
             try {
                 const db = await openHandleDB();
-                return await new Promise((resolve) => {
-                    const tx = db.transaction(IDB_STORE, 'readonly');
-                    const req = tx.objectStore(IDB_STORE).get('bound_excel');
+                return await new Promise((resolve, reject) => {
+                    const tx = db.transaction('handles', 'readonly');
+                    const req = tx.objectStore('handles').get('boundExcel');
                     req.onsuccess = () => resolve(req.result || null);
-                    req.onerror = () => resolve(null);
+                    req.onerror = () => reject(req.error);
                 });
             } catch (e) {
                 return null;
-            }
-        }
-
-        async function autoWriteToBoundExcel() {
-            if (!boundExcelHandle || !window.XLSX) return;
-            try {
-                excelSyncStatus = 'syncing';
-                updateExcelSyncUI();
-                const wb = buildExcelWorkbook();
-                const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-                const writable = await boundExcelHandle.createWritable();
-                await writable.write(wbout);
-                await writable.close();
-                excelSyncStatus = 'synced';
-                updateExcelSyncUI();
-            } catch (err) {
-                console.error('自動寫入 Excel 失敗:', err);
-                excelSyncStatus = 'error';
-                updateExcelSyncUI();
-            }
-        }
-
-        async function readAndLoadFromExcelHandle(handle, silent = false) {
-            try {
-                const file = await handle.getFile();
-                if (!file || file.size === 0) return false;
-                const arrayBuffer = await file.arrayBuffer();
-                const wb = XLSX.read(arrayBuffer, { type: 'array' });
-                return applyWorkbookState(wb, silent);
-            } catch (e) {
-                console.warn('讀取綁定 Excel 失敗:', e);
-                return false;
             }
         }
 
@@ -783,63 +790,112 @@
                 btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-xs sm:text-sm transition active:scale-95';
                 if (icon) icon.className = 'w-4 h-4 text-emerald-400';
                 text.textContent = excelSyncStatus === 'syncing'
-                    ? '寫入 scores.xlsx...'
-                    : `自動同步：${boundExcelHandle.name || SHARED_EXCEL_FILENAME}`;
+                    ? '直接寫入 scores.xlsx...'
+                    : `已綁定直寫：${boundExcelHandle.name || SHARED_EXCEL_FILENAME}`;
+            } else if (getGitHubSyncConfig()) {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-xs sm:text-sm transition active:scale-95';
+                if (icon) icon.className = 'w-4 h-4 text-emerald-400';
+                text.textContent = excelSyncStatus === 'syncing'
+                    ? '同步遠端 scores.xlsx...'
+                    : `雲端直寫同層：${SHARED_EXCEL_FILENAME}`;
             } else if (cachedExcelHandle) {
                 btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-xs sm:text-sm transition active:scale-95 animate-pulse';
                 if (icon) icon.className = 'w-4 h-4 text-amber-400';
-                text.textContent = `延用上次：${cachedExcelHandle.name || SHARED_EXCEL_FILENAME}`;
+                text.textContent = `點擊恢復直寫：${cachedExcelHandle.name || SHARED_EXCEL_FILENAME}`;
             } else if (sharedExcelLoaded) {
                 btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold text-xs sm:text-sm transition active:scale-95';
                 if (icon) icon.className = 'w-4 h-4 text-sky-400';
-                text.textContent = isAuthorizedUser() ? `更新 ${SHARED_EXCEL_FILENAME}` : `已載入 ${SHARED_EXCEL_FILENAME}`;
+                text.textContent = isAuthorizedUser() ? `綁定同層 ${SHARED_EXCEL_FILENAME} 直寫` : `即時讀取同層 ${SHARED_EXCEL_FILENAME}`;
             } else {
                 btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold text-xs sm:text-sm transition active:scale-95';
                 if (icon) icon.className = 'w-4 h-4 text-slate-400';
-                text.textContent = isAuthorizedUser() ? `匯出/綁定 ${SHARED_EXCEL_FILENAME}` : `載入 ${SHARED_EXCEL_FILENAME}`;
+                text.textContent = isAuthorizedUser() ? `綁定同層 ${SHARED_EXCEL_FILENAME} 直寫` : `載入同層 ${SHARED_EXCEL_FILENAME}`;
             }
         }
 
         async function restoreBoundExcelHandleFromIDB() {
             if (!canUseNativeFilePicker()) return;
-            const handle = await loadExcelHandleFromIDB();
+            const handle = await getExcelHandleFromIDB();
             if (!handle) return;
             cachedExcelHandle = handle;
             try {
                 const perm = await handle.queryPermission({ mode: 'readwrite' });
                 if (perm === 'granted') {
                     boundExcelHandle = handle;
-                    excelSyncStatus = 'synced';
                     await readAndLoadFromExcelHandle(handle, true);
-                } else {
-                    excelSyncStatus = 'pending_permission';
+                    excelSyncStatus = 'synced';
                 }
             } catch (e) {
-                excelSyncStatus = 'pending_permission';
+                console.warn('查詢 Excel 權限狀態失敗:', e);
             }
             updateExcelSyncUI();
         }
 
+        async function readAndLoadFromExcelHandle(handle, silent = false) {
+            try {
+                if (typeof XLSX === 'undefined') return false;
+                const file = await handle.getFile();
+                if (!file || file.size === 0) return false;
+                const buffer = await file.arrayBuffer();
+                const wb = XLSX.read(buffer, { type: 'array' });
+                return applyWorkbookState(wb, silent);
+            } catch (e) {
+                console.warn('讀取綁定 Excel 內容失敗:', e);
+                return false;
+            }
+        }
+
+        async function autoWriteToBoundExcel() {
+            if (!boundExcelHandle || typeof XLSX === 'undefined') return;
+            try {
+                excelSyncStatus = 'syncing';
+                updateExcelSyncUI();
+                const wb = buildExcelWorkbook();
+                const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+                const writable = await boundExcelHandle.createWritable();
+                await writable.write(new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+                await writable.close();
+                excelSyncStatus = 'synced';
+                updateExcelSyncUI();
+            } catch (err) {
+                console.error('自動寫入 Excel 失敗:', err);
+                excelSyncStatus = 'error';
+                updateExcelSyncUI();
+                showToast('自動寫入 Excel 失敗，請確認檔案未被其他程式鎖定', 'error');
+            }
+        }
+
         async function bindAutoSaveExcelFile(forceNew = false) {
             if (!canUseNativeFilePicker()) {
-                downloadExcel(SHARED_EXCEL_FILENAME);
+                showToast('目前環境不支援本機檔案直寫，請在「匯出 / 備份」設定 GitHub 雲端直寫或於獨立瀏覽器開啟', 'warning');
+                openExportModal();
                 return;
             }
             try {
                 let handle = !forceNew && cachedExcelHandle ? cachedExcelHandle : null;
                 if (!handle) {
-                    handle = await window.showSaveFilePicker({
-                        suggestedName: SHARED_EXCEL_FILENAME,
-                        types: [{
-                            description: 'Excel 活頁簿 (.xlsx)',
-                            accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] }
-                        }]
-                    });
+                    if (typeof window.showOpenFilePicker === 'function') {
+                        const [pickedHandle] = await window.showOpenFilePicker({
+                            multiple: false,
+                            types: [{
+                                description: '同層固定積分檔 (scores.xlsx)',
+                                accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] }
+                            }]
+                        });
+                        handle = pickedHandle;
+                    } else {
+                        handle = await window.showSaveFilePicker({
+                            suggestedName: SHARED_EXCEL_FILENAME,
+                            types: [{
+                                description: 'Excel 活頁簿 (.xlsx)',
+                                accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] }
+                            }]
+                        });
+                    }
                 }
                 const perm = await handle.requestPermission({ mode: 'readwrite' });
                 if (perm !== 'granted') {
-                    showToast('未取得檔案寫入授權，改為下載固定檔案 scores.xlsx', 'warning');
-                    downloadExcel(SHARED_EXCEL_FILENAME);
+                    showToast('未取得檔案直接寫入權限，請允許讀寫授權以啟用免下載存檔', 'warning');
                     return;
                 }
                 boundExcelHandle = handle;
@@ -853,11 +909,11 @@
                     excelSyncStatus = 'synced';
                 }
                 updateExcelSyncUI();
-                showToast(`已綁定「${handle.name}」，每次加減分將自動覆寫！`, 'success');
+                showToast(`已連結「${handle.name}」，之後加減分將直接寫入該檔（免下載）！`, 'success');
             } catch (err) {
                 if (err && err.name !== 'AbortError') {
-                    console.warn('綁定本機 Excel 失敗，改為下載檔案:', err);
-                    downloadExcel(SHARED_EXCEL_FILENAME);
+                    console.warn('綁定本機 Excel 失敗:', err);
+                    showToast('選取檔案失敗：' + err.message, 'error');
                 }
             }
         }
@@ -869,14 +925,24 @@
                 if (!res.ok) return false;
                 const arrayBuffer = await res.arrayBuffer();
                 if (!arrayBuffer || arrayBuffer.byteLength === 0) return false;
+
+                const bytes = new Uint8Array(arrayBuffer);
+                const sig = `${res.headers.get('Last-Modified') || ''}_${bytes.byteLength}_${bytes[bytes.length - 1] || 0}_${bytes[Math.floor(bytes.length / 2)] || 0}`;
+                if (silent && sharedExcelLoaded && sig === sharedExcelLastSignature) {
+                    return true;
+                }
+
                 const wb = XLSX.read(arrayBuffer, { type: 'array' });
                 const ok = applyWorkbookState(wb, silent);
                 if (ok) {
+                    const isUpdate = sharedExcelLoaded && sig !== sharedExcelLastSignature;
                     sharedExcelLoaded = true;
-                    sharedExcelLastModified = res.headers.get('Last-Modified') || new Date().toLocaleTimeString('zh-TW');
+                    sharedExcelLastSignature = sig;
                     updateExcelSyncUI();
                     if (!silent) {
-                        showToast(`已從同資料夾重新載入最新 ${SHARED_EXCEL_FILENAME}`, 'success');
+                        showToast(`已載入同層最新 ${SHARED_EXCEL_FILENAME}`, 'success');
+                    } else if (isUpdate && !isAuthorizedUser()) {
+                        showToast(`偵測到 ${SHARED_EXCEL_FILENAME} 更新，已自動同步最新分數！`, 'info');
                     }
                 }
                 return ok;
@@ -885,20 +951,34 @@
             }
         }
 
+        function startSharedExcelAutoPolling() {
+            if (sharedExcelPollTimer) clearInterval(sharedExcelPollTimer);
+            sharedExcelPollTimer = setInterval(() => {
+                if (!isAuthorizedUser() && !document.hidden) {
+                    loadSharedExcelFromSameDirectory(true);
+                }
+            }, 5000);
+        }
+
         async function handleExcelSyncClick() {
             if (isAuthorizedUser()) {
                 if (boundExcelHandle) {
                     await autoWriteToBoundExcel();
-                    showToast(`已立即同步寫入 ${boundExcelHandle.name || SHARED_EXCEL_FILENAME}`, 'success');
+                    showToast(`已直接寫入 ${boundExcelHandle.name || SHARED_EXCEL_FILENAME}（免下載）`, 'success');
+                } else if (getGitHubSyncConfig()) {
+                    const ok = await pushExcelToGitHubSameFolder();
+                    if (ok) showToast(`已直接更新遠端同層 ${SHARED_EXCEL_FILENAME}`, 'success');
                 } else if (cachedExcelHandle && canUseNativeFilePicker()) {
                     await bindAutoSaveExcelFile(false);
+                } else if (canUseNativeFilePicker()) {
+                    await bindAutoSaveExcelFile(true);
                 } else {
-                    downloadExcel(SHARED_EXCEL_FILENAME);
+                    openExportModal();
                 }
             } else {
                 const ok = await loadSharedExcelFromSameDirectory(false);
                 if (!ok) {
-                    showToast(`同資料夾尚未放置 ${SHARED_EXCEL_FILENAME}，目前顯示本機紀錄`, 'info');
+                    showToast(`同層目錄尚未偵測到 ${SHARED_EXCEL_FILENAME}`, 'info');
                 }
             }
         }
@@ -906,10 +986,10 @@
         // ==================== 初始化與儲存同步 ====================
         function initApp() {
             try {
-                const saved = localStorage.getItem(STORAGE_KEY);
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    if (parsed && Array.isArray(parsed.groups) && parsed.groups.length === 4 && Array.isArray(parsed.students)) {
+                const savedRaw = localStorage.getItem(STORAGE_KEY);
+                if (savedRaw) {
+                    const parsed = JSON.parse(savedRaw);
+                    if (parsed && Array.isArray(parsed.groups) && Array.isArray(parsed.students)) {
                         appState = {
                             groups: parsed.groups,
                             students: parsed.students,
@@ -922,21 +1002,30 @@
                     }
                 }
             } catch (e) {
-                console.warn('讀取本機存檔失敗，使用預設狀態:', e);
+                console.warn('讀取本機快取失敗，使用預設資料:', e);
+            }
+
+            try {
+                const savedEmail = sessionStorage.getItem(AUTH_SESSION_KEY) || localStorage.getItem(AUTH_SESSION_KEY);
+                if (savedEmail && isEmailAuthorized(savedEmail)) {
+                    currentUserEmail = savedEmail.trim().toLowerCase();
+                }
+            } catch (e) {
+                console.warn('讀取登入狀態失敗:', e);
             }
 
             updateAuthUI();
             renderAll();
 
-            // 優先嘗試自動讀取與 index.html 同資料夾的 scores.xlsx（實現跨平台檢視同步）
             loadSharedExcelFromSameDirectory(true).then((loaded) => {
                 if (loaded) {
                     const subtitle = document.getElementById('header-subtitle');
                     if (subtitle && !isAuthorizedUser()) {
-                        subtitle.textContent = `已自動同步網站資料夾中的 ${SHARED_EXCEL_FILENAME} 最新積分 • 跨平台即時檢視`;
+                        subtitle.textContent = `已連線同層 ${SHARED_EXCEL_FILENAME} • 每 5 秒自動即時同步最新分數`;
                     }
                 }
             });
+            startSharedExcelAutoPolling();
 
             restoreBoundExcelHandleFromIDB();
             if (window.lucide) lucide.createIcons();
@@ -950,6 +1039,9 @@
             }
             if (boundExcelHandle) {
                 autoWriteToBoundExcel();
+            }
+            if (getGitHubSyncConfig()) {
+                pushExcelToGitHubSameFolder();
             }
             if (!skipCloud && window.pushStateToCloud) {
                 window.pushStateToCloud(appState, currentUserEmail);
@@ -978,115 +1070,154 @@
                 updateAuthUI();
                 renderAll();
                 if (updatedBy && updatedBy !== currentUserEmail && updatedBy !== 'system_init') {
-                    showToast(`即時更新：${updatedBy} 剛剛調整了積分`, 'info');
+                    showToast(`即時更新：${updatedBy} 已更新分數`, 'info');
                 }
             } catch (e) {
-                console.error('套用雲端同步資料失敗:', e);
+                console.error('解析雲端同步資料失敗:', e);
             } finally {
                 window.CloudSync.isApplyingRemote = false;
             }
         };
 
-        // ==================== 計算與渲染核心 ====================
+        // ==================== 計算與輔助函式 ====================
         function getGroupStats() {
-            const stats = appState.groups.map(group => {
-                const members = appState.students.filter(s => s.groupId === group.id);
+            const stats = appState.groups.map(g => {
+                const members = appState.students.filter(s => s.groupId === g.id);
                 const total = members.reduce((sum, s) => sum + (Number(s.score) || 0), 0);
-                const avg = members.length > 0 ? (total / members.length).toFixed(1) : '0.0';
+                const avg = members.length > 0 ? Math.round((total / members.length) * 10) / 10 : 0;
                 return {
-                    ...group,
+                    ...g,
                     members,
                     total,
-                    avg
+                    avg,
+                    rank: 1
                 };
             });
 
-            // 計算各組即時排名（同分並列）
-            const sortedTotals = [...stats].map(g => g.total).sort((a, b) => b - a);
-            stats.forEach(g => {
-                g.rank = sortedTotals.indexOf(g.total) + 1;
+            const sortedTotals = [...stats].map(s => s.total).sort((a, b) => b - a);
+            stats.forEach(s => {
+                s.rank = sortedTotals.indexOf(s.total) + 1;
             });
             return stats;
         }
 
+        function getColorTheme(color) {
+            const themes = {
+                blue: {
+                    border: 'border-blue-500/40',
+                    headerBg: 'from-blue-600/25 to-slate-900',
+                    badge: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+                    scoreText: 'text-blue-400',
+                    btnBg: 'bg-blue-600 hover:bg-blue-500',
+                    cardHover: 'hover:border-blue-400/60'
+                },
+                emerald: {
+                    border: 'border-emerald-500/40',
+                    headerBg: 'from-emerald-600/25 to-slate-900',
+                    badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+                    scoreText: 'text-emerald-400',
+                    btnBg: 'bg-emerald-600 hover:bg-emerald-500',
+                    cardHover: 'hover:border-emerald-400/60'
+                },
+                amber: {
+                    border: 'border-amber-500/40',
+                    headerBg: 'from-amber-600/25 to-slate-900',
+                    badge: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+                    scoreText: 'text-amber-400',
+                    btnBg: 'bg-amber-600 hover:bg-amber-500',
+                    cardHover: 'hover:border-amber-400/60'
+                },
+                purple: {
+                    border: 'border-purple-500/40',
+                    headerBg: 'from-purple-600/25 to-slate-900',
+                    badge: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
+                    scoreText: 'text-purple-400',
+                    btnBg: 'bg-purple-600 hover:bg-purple-500',
+                    cardHover: 'hover:border-purple-400/60'
+                }
+            };
+            return themes[color] || themes.blue;
+        }
+
+        // ==================== 畫面渲染 ====================
         function renderAll() {
             renderGroups();
             renderTop3();
             renderLogs();
             updateUndoButton();
-            updateMultiSelectBar();
+            updateExcelSyncUI();
             if (window.lucide) lucide.createIcons();
         }
 
         function renderGroups() {
             const container = document.getElementById('groups-container');
             if (!container) return;
-            const groupStats = getGroupStats();
+            const stats = getGroupStats();
             const canEdit = isAuthorizedUser();
 
-            container.innerHTML = groupStats.map((group, idx) => {
-                const theme = GROUP_THEMES[idx % GROUP_THEMES.length];
+            container.innerHTML = stats.map(group => {
+                const theme = getColorTheme(group.color);
                 const rankBadge = group.rank === 1 && group.total > 0
-                    ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-black bg-yellow-400 text-slate-950 shadow"><i data-lucide="crown" class="w-3.5 h-3.5"></i>第 1 名</span>`
-                    : `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-slate-800/90 text-slate-300 border border-slate-700">第 ${group.rank} 名</span>`;
+                    ? '<span class="text-xs font-black px-2 py-0.5 rounded-full bg-yellow-400 text-slate-950 flex items-center gap-1 shadow"><i data-lucide="crown" class="w-3 h-3"></i>第1名</span>'
+                    : `<span class="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">第 ${group.rank} 名</span>`;
 
                 const groupActionBtn = canEdit
-                    ? `<button onclick="openScoreModalForGroup(${group.id})" class="mt-3 w-full py-2.5 px-3 rounded-xl ${theme.btn} font-black text-xs sm:text-sm shadow-lg transition active:scale-95 flex items-center justify-center gap-1.5">
-                           <i data-lucide="zap" class="w-4 h-4"></i>
-                           <span>整組加減分</span>
+                    ? `<button onclick="openScoreModalForGroup(${group.id})" class="w-full mt-3 py-2.5 px-3 rounded-xl ${theme.btnBg} text-white font-black text-sm shadow-md transition active:scale-95 flex items-center justify-center gap-1.5">
+                        <i data-lucide="users" class="w-4 h-4"></i>
+                        <span>整組加減分 (+1~50)</span>
                        </button>`
-                    : `<div class="mt-3 w-full py-2 px-3 rounded-xl bg-slate-950/50 border border-slate-800 text-center text-[11px] text-slate-400 font-semibold">
-                           均分 ${group.avg} 分 • 共 ${group.members.length} 人
-                       </div>`;
+                    : '';
 
-                const studentsHtml = group.members.length === 0
-                    ? `<div class="text-center py-8 text-slate-500 text-xs">尚無組員名單</div>`
+                const membersHtml = group.members.length === 0
+                    ? '<div class="text-center py-6 text-xs text-slate-500">尚無組員名單</div>'
                     : group.members.map(student => {
                         const isSelected = selectedStudentIds.has(student.id);
-                        const selectedClass = isMultiSelectMode && isSelected
-                            ? 'ring-2 ring-amber-400 bg-amber-500/15 border-amber-400'
-                            : `bg-slate-900/90 border-slate-800 ${canEdit ? theme.cardHover + ' cursor-pointer active:scale-[0.98]' : 'cursor-default'}`;
-
-                        const checkIndicator = isMultiSelectMode && canEdit
-                            ? `<div class="w-5 h-5 rounded-md border flex items-center justify-center mr-2 shrink-0 ${isSelected ? 'bg-amber-400 border-amber-400 text-slate-950' : 'border-slate-600 bg-slate-950'}">
-                                   ${isSelected ? '<i data-lucide="check" class="w-3.5 h-3.5 stroke-[3]"></i>' : ''}
+                        const activeRing = isSelected ? 'ring-2 ring-amber-400 bg-amber-500/15 border-amber-400' : `bg-slate-950/70 border-slate-800 ${canEdit ? theme.cardHover : ''}`;
+                        const cursorClass = canEdit ? 'cursor-pointer active:scale-[0.98]' : 'cursor-default';
+                        const clickAttr = canEdit ? `onclick="handleStudentCardClick('${student.id}')"` : '';
+                        const checkIcon = isMultiSelectMode && canEdit
+                            ? `<div class="w-5 h-5 rounded-md border ${isSelected ? 'bg-amber-400 border-amber-400 text-slate-950' : 'border-slate-600'} flex items-center justify-center mr-2 shrink-0">
+                                ${isSelected ? '<i data-lucide="check" class="w-3.5 h-3.5 stroke-[3]"></i>' : ''}
                                </div>`
                             : '';
 
                         return `
-                            <div id="student-card-${student.id}"
-                                 onclick="handleStudentCardClick('${student.id}')"
-                                 class="relative flex items-center justify-between p-3 rounded-xl border transition-all ${selectedClass}">
+                            <div id="student-card-${student.id}" ${clickAttr} class="relative flex items-center justify-between p-3 rounded-xl border ${activeRing} ${cursorClass} transition select-none">
                                 <div class="flex items-center min-w-0">
-                                    ${checkIndicator}
-                                    <span class="font-bold text-slate-100 text-sm sm:text-base truncate">${escapeHTML(student.name)}</span>
+                                    ${checkIcon}
+                                    <span class="font-bold text-slate-100 text-base truncate">${escapeHTML(student.name)}</span>
                                 </div>
-                                <div class="flex items-center gap-1.5 shrink-0 ml-2">
-                                    <span id="student-score-${student.id}" class="text-lg sm:text-xl font-black tabular-nums ${theme.scoreText}">${student.score}</span>
-                                    <span class="text-[11px] text-slate-500 font-bold">分</span>
+                                <div class="flex items-center gap-1.5 shrink-0">
+                                    <span id="student-score-${student.id}" class="font-black text-lg ${student.score > 0 ? 'text-yellow-300' : (student.score < 0 ? 'text-rose-400' : 'text-slate-400')}">${student.score}</span>
+                                    <span class="text-xs text-slate-500">分</span>
                                 </div>
                             </div>
                         `;
                     }).join('');
 
                 return `
-                    <section id="group-card-${group.id}" class="relative bg-slate-900/95 border-2 ${theme.border} rounded-3xl overflow-hidden shadow-xl flex flex-col">
-                        <div class="${theme.headerBg} p-4 border-b border-slate-800/80">
+                    <section id="group-card-${group.id}" class="bg-slate-900 border-2 ${theme.border} rounded-3xl overflow-hidden shadow-xl flex flex-col">
+                        <div class="bg-gradient-to-b ${theme.headerBg} p-4 border-b border-slate-800/80">
                             <div class="flex items-center justify-between gap-2 mb-2">
-                                <h2 class="text-lg sm:text-xl font-black ${theme.title} tracking-tight">${escapeHTML(group.name)}</h2>
+                                <h2 class="text-xl font-black text-white tracking-tight">${escapeHTML(group.name)}</h2>
                                 ${rankBadge}
                             </div>
-                            <div class="flex items-baseline justify-between">
+                            <div class="flex items-baseline justify-between mt-1">
                                 <div>
-                                    <span id="group-total-${group.id}" class="text-3xl sm:text-4xl font-black text-white tabular-nums tracking-tight">${group.total}</span>
-                                    <span class="text-xs font-bold text-slate-400 ml-1">總分</span>
+                                    <span class="text-xs text-slate-400 block">組別總分</span>
+                                    <span id="group-total-${group.id}" class="text-3xl sm:text-4xl font-black ${theme.scoreText} tracking-tight">${group.total}</span>
+                                    <span class="text-xs text-slate-400 ml-1">分</span>
                                 </div>
-                                <span class="text-xs font-semibold text-slate-400">均分 <strong class="text-slate-200">${group.avg}</strong></span>
+                                <div class="text-right">
+                                    <span class="text-xs text-slate-400 block">組平均 (${group.members.length}人)</span>
+                                    <span class="text-lg font-extrabold text-slate-200">${group.avg}</span>
+                                    <span class="text-xs text-slate-500">分</span>
+                                </div>
                             </div>
                             ${groupActionBtn}
                         </div>
                         <div class="p-3 space-y-2">
-                            ${studentsHtml}
+                            ${membersHtml}
                         </div>
                     </section>
                 `;
@@ -1097,58 +1228,52 @@
             const container = document.getElementById('top3-list');
             if (!container) return;
             const sorted = [...appState.students].sort((a, b) => b.score - a.score).slice(0, 3);
-            const medals = ['🥇', '🥈', '🥉'];
-
             if (sorted.length === 0) {
-                container.innerHTML = `<div class="text-xs text-slate-500 text-center py-3">尚無學生資料</div>`;
+                container.innerHTML = '<div class="text-xs text-slate-500 text-center py-4">尚無學生資料</div>';
                 return;
             }
-
-            container.innerHTML = sorted.map((s, i) => {
+            const medals = ['🥇', '🥈', '🥉'];
+            container.innerHTML = sorted.map((s, idx) => {
                 const grp = appState.groups.find(g => g.id === s.groupId);
                 return `
                     <div class="flex items-center justify-between bg-slate-950/70 border border-slate-800/90 px-3 py-2 rounded-xl">
                         <div class="flex items-center gap-2 min-w-0">
-                            <span class="text-base">${medals[i]}</span>
-                            <div class="min-w-0">
-                                <div class="font-bold text-slate-100 text-xs sm:text-sm truncate">${escapeHTML(s.name)}</div>
-                                <div class="text-[11px] text-slate-500">${grp ? escapeHTML(grp.name) : ''}</div>
-                            </div>
+                            <span class="text-base">${medals[idx] || '🏅'}</span>
+                            <span class="font-bold text-sm text-white truncate">${escapeHTML(s.name)}</span>
+                            <span class="text-[11px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">${grp ? escapeHTML(grp.name) : ''}</span>
                         </div>
-                        <div class="font-black text-yellow-400 text-sm sm:text-base tabular-nums shrink-0">${s.score} <span class="text-[10px] text-slate-400 font-normal">分</span></div>
+                        <span class="font-black text-yellow-400 text-sm shrink-0">${s.score} 分</span>
                     </div>
                 `;
             }).join('');
         }
 
         function renderLogs() {
-            const list = document.getElementById('history-log-list');
-            const countBadge = document.getElementById('log-count');
-            if (!list || !countBadge) return;
-
-            countBadge.textContent = `${appState.logs.length} 筆`;
+            const container = document.getElementById('history-log-list');
+            const countEl = document.getElementById('log-count');
+            if (!container) return;
+            if (countEl) countEl.textContent = `${appState.logs.length} 筆`;
 
             if (appState.logs.length === 0) {
-                list.innerHTML = `<div class="text-center text-xs text-slate-500 py-10">尚無加減分紀錄<br>登入後點擊學生或整組即可開始計分</div>`;
+                container.innerHTML = '<div class="text-xs text-slate-500 text-center py-8">尚無加減分紀錄</div>';
                 return;
             }
 
-            list.innerHTML = appState.logs.slice(0, 60).map(log => {
-                const isPlus = log.delta >= 0;
-                const badgeClass = isPlus
+            container.innerHTML = appState.logs.slice(0, 80).map(log => {
+                const isPositive = log.delta >= 0;
+                const badgeClass = isPositive
                     ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                     : 'bg-rose-500/20 text-rose-300 border-rose-500/30';
-                const deltaStr = isPlus ? `+${log.delta}` : `${log.delta}`;
-
+                const deltaText = isPositive ? `+${log.delta}` : `${log.delta}`;
                 return `
                     <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-2.5 text-xs">
                         <div class="flex items-center justify-between gap-2 mb-1">
-                            <span class="font-bold text-slate-200 truncate">${escapeHTML(log.targetName)}</span>
-                            <span class="px-2 py-0.5 rounded-md border font-black tabular-nums shrink-0 ${badgeClass}">${deltaStr} 分</span>
+                            <span class="font-bold text-slate-200 truncate">${escapeHTML(log.targetLabel)}</span>
+                            <span class="font-black px-2 py-0.5 rounded-md border ${badgeClass} shrink-0">${deltaText} 分</span>
                         </div>
                         <div class="flex items-center justify-between text-[11px] text-slate-500">
-                            <span>${escapeHTML(log.detail || '')}</span>
                             <span>${escapeHTML(log.time || '')}</span>
+                            <span class="truncate max-w-[140px]">${escapeHTML(log.operator || '')}</span>
                         </div>
                     </div>
                 `;
@@ -1158,61 +1283,15 @@
         function updateUndoButton() {
             const btn = document.getElementById('btn-undo');
             if (!btn) return;
-            btn.disabled = !appState.undoStack || appState.undoStack.length === 0;
+            btn.disabled = !isAuthorizedUser() || appState.undoStack.length === 0;
         }
 
-        // ==================== 多選與點擊互動 ====================
-        function toggleMultiSelect() {
-            if (!isAuthorizedUser()) {
-                openAuthModal();
-                return;
-            }
-            isMultiSelectMode = !isMultiSelectMode;
-            selectedStudentIds.clear();
-            updateMultiSelectBar();
-            renderGroups();
-            if (window.lucide) lucide.createIcons();
-        }
-
-        function updateMultiSelectBar() {
-            const bar = document.getElementById('multi-select-bar');
-            const badge = document.getElementById('multi-select-badge');
-            const countEl = document.getElementById('selected-count');
-            const scoreBtn = document.getElementById('btn-score-selected');
-            const toggleBtn = document.getElementById('btn-toggle-multi');
-
-            if (!bar || !badge) return;
-
-            if (isMultiSelectMode && isAuthorizedUser()) {
-                bar.classList.remove('hidden');
-                badge.classList.remove('hidden');
-                if (toggleBtn) {
-                    toggleBtn.classList.add('bg-amber-500/20', 'border-amber-500/50', 'text-amber-300');
-                }
-                if (countEl) countEl.textContent = selectedStudentIds.size;
-                if (scoreBtn) scoreBtn.disabled = selectedStudentIds.size === 0;
-            } else {
-                bar.classList.add('hidden');
-                badge.classList.add('hidden');
-                if (toggleBtn) {
-                    toggleBtn.classList.remove('bg-amber-500/20', 'border-amber-500/50', 'text-amber-300');
-                }
-            }
-        }
-
-        function clearSelection() {
-            selectedStudentIds.clear();
-            updateMultiSelectBar();
-            renderGroups();
-            if (window.lucide) lucide.createIcons();
-        }
-
+        // ==================== 互動與計分邏輯 ====================
         function handleStudentCardClick(studentId) {
             if (!isAuthorizedUser()) {
-                showToast('目前為唯讀檢視模式，請先點擊右上角「管理員登入」', 'warning');
+                showToast('目前為唯讀檢視模式，請先登入管理員 Email', 'warning');
                 return;
             }
-
             if (isMultiSelectMode) {
                 if (selectedStudentIds.has(studentId)) {
                     selectedStudentIds.delete(studentId);
@@ -1227,15 +1306,45 @@
             }
         }
 
-        // ==================== 極速加減分邏輯 ====================
-        function openScoreModalForStudent(studentId) {
+        function toggleMultiSelect() {
             if (!isAuthorizedUser()) return;
+            isMultiSelectMode = !isMultiSelectMode;
+            selectedStudentIds.clear();
+            const bar = document.getElementById('multi-select-bar');
+            const badge = document.getElementById('multi-select-badge');
+            if (isMultiSelectMode) {
+                bar.classList.remove('hidden');
+                badge.classList.remove('hidden');
+            } else {
+                bar.classList.add('hidden');
+                badge.classList.add('hidden');
+            }
+            updateMultiSelectBar();
+            renderGroups();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function clearSelection() {
+            selectedStudentIds.clear();
+            updateMultiSelectBar();
+            renderGroups();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function updateMultiSelectBar() {
+            const countEl = document.getElementById('selected-count');
+            const btn = document.getElementById('btn-score-selected');
+            if (countEl) countEl.textContent = selectedStudentIds.size;
+            if (btn) btn.disabled = selectedStudentIds.size === 0;
+        }
+
+        function openScoreModalForStudent(studentId) {
             const student = appState.students.find(s => s.id === studentId);
             if (!student) return;
             const group = appState.groups.find(g => g.id === student.groupId);
+            currentModalContext = { type: 'student', studentId: student.id };
 
-            activeModalTarget = { type: 'student', id: studentId };
-            document.getElementById('modal-target-badge').textContent = `${group ? group.name : ''} • 個人計分`;
+            document.getElementById('modal-target-badge').textContent = `單人加減分 • ${group ? group.name : ''}`;
             document.getElementById('modal-target-title').textContent = student.name;
             document.getElementById('modal-target-subtitle').innerHTML = `目前積分：<span class="text-yellow-400 font-bold">${student.score}</span> 分`;
             showScoreModal();
@@ -1246,54 +1355,54 @@
             const group = appState.groups.find(g => g.id === groupId);
             if (!group) return;
             const members = appState.students.filter(s => s.groupId === groupId);
-            const total = members.reduce((sum, s) => sum + s.score, 0);
+            if (members.length === 0) {
+                showToast('此組別目前沒有成員', 'warning');
+                return;
+            }
+            const total = members.reduce((sum, m) => sum + m.score, 0);
+            currentModalContext = { type: 'group', groupId };
 
-            activeModalTarget = { type: 'group', id: groupId };
-            document.getElementById('modal-target-badge').textContent = `整組同步加扣分（共 ${members.length} 人）`;
+            document.getElementById('modal-target-badge').textContent = `整組同時加減分（共 ${members.length} 人）`;
             document.getElementById('modal-target-title').textContent = group.name;
-            document.getElementById('modal-target-subtitle').innerHTML = `目前全組總分：<span class="text-yellow-400 font-bold">${total}</span> 分（每人同步加減）`;
+            document.getElementById('modal-target-subtitle').innerHTML = `全組總分：<span class="text-yellow-400 font-bold">${total}</span> 分（每位組員皆會同步加減分）`;
             showScoreModal();
         }
 
         function openScoreModalForSelected() {
             if (!isAuthorizedUser() || selectedStudentIds.size === 0) return;
-            const names = appState.students
-                .filter(s => selectedStudentIds.has(s.id))
-                .map(s => s.name);
+            const ids = Array.from(selectedStudentIds);
+            const names = ids.map(id => appState.students.find(s => s.id === id)?.name).filter(Boolean);
+            currentModalContext = { type: 'multi', studentIds: ids };
 
-            activeModalTarget = { type: 'selected', ids: Array.from(selectedStudentIds) };
-            document.getElementById('modal-target-badge').textContent = `多選批次計分（共 ${names.length} 人）`;
+            document.getElementById('modal-target-badge').textContent = `多選批次加減分（共 ${ids.length} 人）`;
             document.getElementById('modal-target-title').textContent = names.slice(0, 4).join('、') + (names.length > 4 ? ` 等 ${names.length} 人` : '');
-            document.getElementById('modal-target-subtitle').textContent = '所選同學將同步加減相同分數';
+            document.getElementById('modal-target-subtitle').textContent = '選取的每位同學皆會同步加減相同分數';
             showScoreModal();
         }
 
         function showScoreModal() {
-            const modal = document.getElementById('score-modal');
             const input = document.getElementById('custom-score-input');
             const err = document.getElementById('custom-score-error');
             if (input) input.value = '';
             if (err) err.classList.add('hidden');
-
+            const modal = document.getElementById('score-modal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
-            setTimeout(() => {
-                if (input) input.focus();
-            }, 60);
+            setTimeout(() => input && input.focus(), 50);
         }
 
         function closeScoreModal() {
             const modal = document.getElementById('score-modal');
             modal.classList.add('hidden');
             modal.classList.remove('flex');
-            activeModalTarget = null;
+            currentModalContext = null;
         }
 
-        function handleCustomScoreKey(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
+        function handleCustomScoreKey(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
                 applyCustomScore(1);
-            } else if (e.key === 'Escape') {
+            } else if (event.key === 'Escape') {
                 closeScoreModal();
             }
         }
@@ -1301,147 +1410,132 @@
         function applyCustomScore(sign) {
             const input = document.getElementById('custom-score-input');
             const err = document.getElementById('custom-score-error');
-            const rawVal = Number(input.value);
-
-            if (!input.value || isNaN(rawVal) || Math.abs(rawVal) < 1 || Math.abs(rawVal) > 50) {
+            const rawVal = parseInt(input.value, 10);
+            if (isNaN(rawVal) || rawVal < 1 || rawVal > 50) {
                 err.classList.remove('hidden');
-                input.focus();
                 return;
             }
             err.classList.add('hidden');
-            const delta = rawVal < 0 ? rawVal : rawVal * sign;
-            applyScore(delta);
+            applyScore(rawVal * sign);
+            input.value = '';
         }
 
         function applyScore(delta) {
-            if (!isAuthorizedUser() || !activeModalTarget) return;
+            if (!isAuthorizedUser() || !currentModalContext || !delta) return;
 
             let targetStudents = [];
-            let logTargetName = '';
-            let logDetail = '';
+            let targetLabel = '';
+            let groupIdForLog = null;
 
-            if (activeModalTarget.type === 'student') {
-                const st = appState.students.find(s => s.id === activeModalTarget.id);
-                if (!st) return;
-                const grp = appState.groups.find(g => g.id === st.groupId);
-                targetStudents = [st];
-                logTargetName = st.name;
-                logDetail = `${grp ? grp.name : ''} • 個人`;
-            } else if (activeModalTarget.type === 'group') {
-                const grp = appState.groups.find(g => g.id === activeModalTarget.id);
-                if (!grp) return;
-                targetStudents = appState.students.filter(s => s.groupId === grp.id);
-                logTargetName = `${grp.name} (整組 ${targetStudents.length} 人)`;
-                logDetail = '整組同步';
-            } else if (activeModalTarget.type === 'selected') {
-                targetStudents = appState.students.filter(s => activeModalTarget.ids.includes(s.id));
-                logTargetName = targetStudents.map(s => s.name).join('、');
-                logDetail = `多選 ${targetStudents.length} 人`;
+            if (currentModalContext.type === 'student') {
+                const s = appState.students.find(st => st.id === currentModalContext.studentId);
+                if (!s) return;
+                const grp = appState.groups.find(g => g.id === s.groupId);
+                targetStudents = [s];
+                targetLabel = `${s.name} (${grp ? grp.name : ''})`;
+                groupIdForLog = s.groupId;
+            } else if (currentModalContext.type === 'group') {
+                const grp = appState.groups.find(g => g.id === currentModalContext.groupId);
+                targetStudents = appState.students.filter(st => st.groupId === currentModalContext.groupId);
+                targetLabel = `【整組】${grp ? grp.name : ''} (${targetStudents.length}人)`;
+                groupIdForLog = currentModalContext.groupId;
+            } else if (currentModalContext.type === 'multi') {
+                targetStudents = appState.students.filter(st => currentModalContext.studentIds.includes(st.id));
+                targetLabel = `【多選】${targetStudents.map(s => s.name).join('、')}`;
             }
 
             if (targetStudents.length === 0) return;
 
-            // 記錄復原快照
-            appState.undoStack.push({
-                changes: targetStudents.map(s => ({ id: s.id, prevScore: s.score })),
-                desc: `${logTargetName} (${delta >= 0 ? '+' : ''}${delta} 分)`
-            });
-            if (appState.undoStack.length > 30) appState.undoStack.shift();
+            const undoChanges = targetStudents.map(s => ({
+                studentId: s.id,
+                prevScore: s.score
+            }));
 
-            // 套用分數變更
             targetStudents.forEach(s => {
                 s.score = (Number(s.score) || 0) + delta;
             });
 
-            // 寫入即時操作紀錄
-            const nowStr = new Date().toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            appState.logs.unshift({
+            const nowStr = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+            const logEntry = {
                 id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-                targetName: logTargetName,
-                delta: delta,
-                detail: `${logDetail}${currentUserEmail ? ' • ' + currentUserEmail.split('@')[0] : ''}`,
                 time: nowStr,
-                timestamp: new Date().toISOString()
+                targetLabel,
+                groupId: groupIdForLog,
+                delta,
+                operator: currentUserEmail || 'admin'
+            };
+
+            appState.logs.unshift(logEntry);
+            if (appState.logs.length > 300) appState.logs.length = 300;
+
+            appState.undoStack.push({
+                changes: undoChanges,
+                logId: logEntry.id,
+                label: `${targetLabel} (${delta > 0 ? '+' + delta : delta})`
             });
-            if (appState.logs.length > 200) appState.logs.length = 200;
+            if (appState.undoStack.length > 50) appState.undoStack.shift();
 
             saveState();
             renderAll();
 
-            // 觸發浮動加分動畫
-            targetStudents.forEach(s => spawnFloatingBadge(`student-card-${s.id}`, delta));
+            // 觸發分數跳動視覺回饋
+            targetStudents.forEach(s => {
+                triggerScoreAnimation(s.id, delta);
+            });
+
+            // 更新彈窗內的即時分數顯示
+            if (currentModalContext.type === 'student') {
+                const s = targetStudents[0];
+                document.getElementById('modal-target-subtitle').innerHTML = `目前積分：<span class="text-yellow-400 font-bold">${s.score}</span> 分`;
+            } else if (currentModalContext.type === 'group') {
+                const total = targetStudents.reduce((sum, m) => sum + m.score, 0);
+                document.getElementById('modal-target-subtitle').innerHTML = `全組總分：<span class="text-yellow-400 font-bold">${total}</span> 分（每位組員皆會同步加減分）`;
+            }
 
             const keepOpen = document.getElementById('keep-modal-open')?.checked;
-            if (keepOpen) {
-                if (activeModalTarget.type === 'student') {
-                    const st = appState.students.find(s => s.id === activeModalTarget.id);
-                    if (st) {
-                        document.getElementById('modal-target-subtitle').innerHTML = `目前積分：<span class="text-yellow-400 font-bold">${st.score}</span> 分`;
-                    }
-                } else if (activeModalTarget.type === 'group') {
-                    const total = appState.students.filter(s => s.groupId === activeModalTarget.id).reduce((sum, s) => sum + s.score, 0);
-                    document.getElementById('modal-target-subtitle').innerHTML = `目前全組總分：<span class="text-yellow-400 font-bold">${total}</span> 分（每人同步加減）`;
-                }
-                const input = document.getElementById('custom-score-input');
-                if (input) {
-                    input.value = '';
-                    input.focus();
-                }
-            } else {
+            if (!keepOpen) {
                 closeScoreModal();
-                if (isMultiSelectMode && activeModalTarget?.type === 'selected') {
-                    clearSelection();
-                }
             }
         }
 
-        function spawnFloatingBadge(elementId, delta) {
-            const el = document.getElementById(elementId);
-            if (!el) return;
-            const badge = document.createElement('div');
-            badge.className = `floating-badge right-3 top-1 px-2.5 py-0.5 rounded-full font-black text-sm shadow-lg ${
-                delta >= 0 ? 'bg-emerald-400 text-slate-950' : 'bg-rose-500 text-white'
-            }`;
-            badge.textContent = `${delta >= 0 ? '+' : ''}${delta}`;
-            el.appendChild(badge);
-            setTimeout(() => badge.remove(), 850);
+        function triggerScoreAnimation(studentId, delta) {
+            const scoreEl = document.getElementById(`student-score-${studentId}`);
+            const cardEl = document.getElementById(`student-card-${studentId}`);
+            if (scoreEl) {
+                scoreEl.classList.remove('animate-score-pop');
+                void scoreEl.offsetWidth;
+                scoreEl.classList.add('animate-score-pop');
+            }
+            if (cardEl) {
+                const badge = document.createElement('span');
+                badge.className = `floating-badge right-3 top-1 font-black text-base ${delta > 0 ? 'text-emerald-300' : 'text-rose-400'}`;
+                badge.textContent = delta > 0 ? `+${delta}` : `${delta}`;
+                cardEl.appendChild(badge);
+                setTimeout(() => badge.remove(), 850);
+            }
         }
 
         function undoLastAction() {
-            if (!isAuthorizedUser() || !appState.undoStack || appState.undoStack.length === 0) return;
+            if (!isAuthorizedUser() || appState.undoStack.length === 0) return;
             const last = appState.undoStack.pop();
             last.changes.forEach(ch => {
-                const st = appState.students.find(s => s.id === ch.id);
+                const st = appState.students.find(s => s.id === ch.studentId);
                 if (st) st.score = ch.prevScore;
             });
-
-            const nowStr = new Date().toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            appState.logs.unshift({
-                id: 'log_undo_' + Date.now(),
-                targetName: `復原：${last.desc}`,
-                delta: 0,
-                detail: '操作復原',
-                time: nowStr,
-                timestamp: new Date().toISOString()
-            });
-
+            appState.logs = appState.logs.filter(l => l.id !== last.logId);
             saveState();
             renderAll();
-            showToast(`已復原：${last.desc}`, 'info');
+            showToast(`已復原：${last.label}`, 'info');
         }
 
         // ==================== 名單管理 ====================
         function openRosterModal() {
             if (!isAuthorizedUser()) return;
             for (let i = 0; i < 4; i++) {
-                const grp = appState.groups[i] || { id: i, name: `第${['一', '二', '三', '四'][i]}組` };
-                const nameInput = document.getElementById(`edit-group-name-${i}`);
-                const textarea = document.getElementById(`roster-textarea-${i}`);
-                if (nameInput) nameInput.value = grp.name;
-                if (textarea) {
-                    const members = appState.students.filter(s => s.groupId === i).map(s => s.name);
-                    textarea.value = members.join('\n');
-                }
+                const grp = appState.groups[i] || { id: i, name: `第${i + 1}組` };
+                document.getElementById(`edit-group-name-${i}`).value = grp.name;
+                const members = appState.students.filter(s => s.groupId === i).map(s => s.name);
+                document.getElementById(`roster-textarea-${i}`).value = members.join('\n');
             }
             updateRosterCounts();
             const modal = document.getElementById('roster-modal');
@@ -1457,86 +1551,78 @@
 
         function updateRosterCounts() {
             for (let i = 0; i < 4; i++) {
-                const textarea = document.getElementById(`roster-textarea-${i}`);
-                const countEl = document.getElementById(`roster-count-${i}`);
-                if (textarea && countEl) {
-                    const lines = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
-                    countEl.textContent = `${lines.length} 人`;
-                }
+                const lines = document.getElementById(`roster-textarea-${i}`).value
+                    .split('\n')
+                    .map(s => s.trim())
+                    .filter(Boolean);
+                document.getElementById(`roster-count-${i}`).textContent = `${lines.length} 人`;
             }
         }
 
         function loadDemoRoster() {
             for (let i = 0; i < 4; i++) {
-                const grp = DEFAULT_STATE.groups[i];
+                document.getElementById(`edit-group-name-${i}`).value = DEFAULT_STATE.groups[i].name;
                 const members = DEFAULT_STATE.students.filter(s => s.groupId === i).map(s => s.name);
-                document.getElementById(`edit-group-name-${i}`).value = grp.name;
                 document.getElementById(`roster-textarea-${i}`).value = members.join('\n');
             }
             updateRosterCounts();
-            showToast('已帶入預設 19 人四組名單，請按「儲存名單設定」套用', 'info');
+            showToast('已帶入預設四組名單，請按「儲存名單設定」套用', 'info');
         }
 
         function saveRosterChanges() {
-            const oldScoreMap = new Map();
+            if (!isAuthorizedUser()) return;
+            const existingScoreByName = new Map();
             appState.students.forEach(s => {
-                oldScoreMap.set(s.name.trim(), s.score);
+                existingScoreByName.set(s.name.trim(), s.score);
             });
 
-            const newGroups = [];
             const newStudents = [];
-            let seq = 1;
-
+            let idx = 1;
             for (let i = 0; i < 4; i++) {
-                const gName = (document.getElementById(`edit-group-name-${i}`).value || '').trim() || `第${['一', '二', '三', '四'][i]}組`;
-                newGroups.push({
-                    id: i,
-                    name: gName,
-                    color: ['blue', 'emerald', 'amber', 'purple'][i]
-                });
-
-                const names = document.getElementById(`roster-textarea-${i}`).value
+                const newName = document.getElementById(`edit-group-name-${i}`).value.trim() || `第${i + 1}組`;
+                appState.groups[i].name = newName;
+                const lines = document.getElementById(`roster-textarea-${i}`).value
                     .split('\n')
-                    .map(n => n.trim())
+                    .map(s => s.trim())
                     .filter(Boolean);
-
-                names.forEach(name => {
+                lines.forEach(name => {
                     newStudents.push({
-                        id: 's' + (seq++),
-                        name: name,
+                        id: 's' + (idx++),
+                        name,
                         groupId: i,
-                        score: oldScoreMap.has(name) ? oldScoreMap.get(name) : 0
+                        score: existingScoreByName.has(name) ? existingScoreByName.get(name) : 0
                     });
                 });
             }
 
-            appState.groups = newGroups;
             appState.students = newStudents;
             selectedStudentIds.clear();
             saveState();
             renderAll();
             closeRosterModal();
-            showToast(`已更新四組名單（共 ${newStudents.length} 位同學）`, 'success');
+            showToast('班級四組名單已更新！', 'success');
         }
 
         // ==================== 個人排行榜 ====================
         function openLeaderboardModal() {
-            const list = document.getElementById('full-leaderboard-list');
+            const listEl = document.getElementById('full-leaderboard-list');
             const sorted = [...appState.students].sort((a, b) => b.score - a.score);
-
-            list.innerHTML = sorted.map((s, idx) => {
+            listEl.innerHTML = sorted.map((s, idx) => {
                 const grp = appState.groups.find(g => g.id === s.groupId);
-                const rankDisplay = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+                const rankIcon = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `#${idx + 1}`));
                 return `
                     <div class="flex items-center justify-between bg-slate-950/80 border border-slate-800 px-4 py-3 rounded-2xl">
                         <div class="flex items-center gap-3">
-                            <span class="w-8 text-center font-black text-base text-slate-400">${rankDisplay}</span>
+                            <span class="w-8 text-center font-black text-base text-slate-300">${rankIcon}</span>
                             <div>
                                 <div class="font-bold text-white text-base">${escapeHTML(s.name)}</div>
                                 <div class="text-xs text-slate-400">${grp ? escapeHTML(grp.name) : ''}</div>
                             </div>
                         </div>
-                        <div class="text-xl font-black text-yellow-400 tabular-nums">${s.score} <span class="text-xs text-slate-400 font-normal">分</span></div>
+                        <div class="text-right">
+                            <span class="font-black text-xl text-yellow-400">${s.score}</span>
+                            <span class="text-xs text-slate-400 ml-1">分</span>
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -1565,10 +1651,75 @@
             });
             document.getElementById('export-preview-text').value = lines.join('\n');
 
+            renderGitHubSyncPanelInExportModal();
+
             const modal = document.getElementById('export-modal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
             if (window.lucide) lucide.createIcons();
+        }
+
+        function renderGitHubSyncPanelInExportModal() {
+            const modalBody = document.querySelector('#export-modal > div');
+            if (!modalBody) return;
+            let panel = document.getElementById('github-direct-sync-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'github-direct-sync-panel';
+                panel.className = 'bg-slate-950/90 border border-indigo-500/30 rounded-2xl p-3.5 mb-4';
+                const anchor = modalBody.querySelector('.bg-emerald-950\\/40');
+                if (anchor) {
+                    anchor.insertAdjacentElement('afterend', panel);
+                }
+            }
+
+            const existing = getGitHubSyncConfig() || {};
+            let defaultOwner = existing.owner || '';
+            let defaultRepo = existing.repo || '';
+            if (!defaultOwner && location.hostname.endsWith('.github.io')) {
+                defaultOwner = location.hostname.replace('.github.io', '');
+                const pathParts = location.pathname.split('/').filter(Boolean);
+                if (pathParts.length > 0) defaultRepo = pathParts[0];
+            }
+
+            panel.innerHTML = `
+                <div class="flex items-center justify-between gap-2 mb-2">
+                    <div class="text-xs font-black text-indigo-300 flex items-center gap-1.5">
+                        <i data-lucide="cloud-upload" class="w-4 h-4 text-indigo-400"></i>
+                        <span>線上網頁免下載直寫同層 scores.xlsx（GitHub Pages 同步設定）</span>
+                    </div>
+                    <span class="text-[11px] ${existing.token ? 'text-emerald-400 font-bold' : 'text-slate-400'}">
+                        ${existing.token ? '● 已啟用雲端直寫' : '選填設定'}
+                    </span>
+                </div>
+                <p class="text-[11px] text-slate-400 mb-2.5">設定後，管理員在線上網頁加減分會直接更新同資料夾的 <code class="text-amber-300">scores.xlsx</code>，全班檢視者自動即時看到最新分數，完全免下載！</p>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                    <input type="text" id="gh-sync-owner" value="${escapeHTML(defaultOwner)}" placeholder="GitHub 帳號 (例: a008548-skh)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
+                    <input type="text" id="gh-sync-repo" value="${escapeHTML(defaultRepo)}" placeholder="專案名稱 (例: nycuihha15)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
+                    <input type="password" id="gh-sync-token" value="${escapeHTML(existing.token || '')}" placeholder="GitHub Token (ghp_...)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
+                    <button onclick="handleSaveGitHubSyncSettings()" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition active:scale-95">
+                        儲存並立即同步
+                    </button>
+                </div>
+            `;
+        }
+
+        async function handleSaveGitHubSyncSettings() {
+            const owner = document.getElementById('gh-sync-owner')?.value || '';
+            const repo = document.getElementById('gh-sync-repo')?.value || '';
+            const token = document.getElementById('gh-sync-token')?.value || '';
+            const cfg = saveGitHubSyncConfig(owner, repo, 'main', token);
+            updateExcelSyncUI();
+            if (!cfg) {
+                showToast('已清除 GitHub 雲端直寫設定', 'info');
+                return;
+            }
+            const ok = await pushExcelToGitHubSameFolder();
+            if (ok) {
+                showToast(`已成功連線並更新同層 ${SHARED_EXCEL_FILENAME}！`, 'success');
+            } else {
+                showToast('連線測試失敗，請確認帳號、專案名稱與 Token 權限（需勾選 repo 寫入權限）', 'error');
+            }
         }
 
         function closeExportModal() {
@@ -1581,132 +1732,120 @@
             const textarea = document.getElementById('export-preview-text');
             textarea.select();
             document.execCommand('copy');
-            const btnText = document.getElementById('copy-btn-text');
-            if (btnText) btnText.textContent = '已複製！';
-            showToast('已複製戰況文字報表到剪貼簿', 'success');
-            setTimeout(() => {
-                if (btnText) btnText.textContent = '複製文字';
-            }, 2000);
+            showToast('報表文字已複製到剪貼簿！', 'success');
         }
 
         function downloadCSV() {
             const stats = getGroupStats();
-            let csv = '\uFEFF組別,組排名,組總分,姓名,個人積分\n';
+            const rows = [['組別', '組別排名', '學生姓名', '個人積分']];
             stats.forEach(g => {
                 g.members.forEach(m => {
-                    csv += `"${g.name}",${g.rank},${g.total},"${m.name}",${m.score}\n`;
+                    rows.push([g.name, `第 ${g.rank} 名`, m.name, m.score]);
                 });
             });
-            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const csvContent = '\uFEFF' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
             a.download = `班級分組積分_${new Date().toISOString().slice(0, 10)}.csv`;
             a.click();
             URL.revokeObjectURL(url);
-            showToast('已下載 CSV 成績表', 'success');
+            showToast('已匯出 CSV 成績檔', 'success');
         }
 
         function buildExcelWorkbook() {
-            if (typeof XLSX === 'undefined') return null;
             const wb = XLSX.utils.book_new();
             const stats = getGroupStats();
 
-            // 1. 總覽與全班明細
-            const overviewRows = [
-                ['班級分組積分總覽', '', '', '匯出時間：' + new Date().toLocaleString('zh-TW')],
+            // Sheet 1: 總覽與全班明細
+            const summaryRows = [
+                ['班級分組積分戰況總覽', '', '', '', `更新時間：${new Date().toLocaleString('zh-TW')}`],
                 [],
-                ['組別', '目前排名', '全組總分', '組平均分', '組員人數']
+                ['組別名稱', '目前排名', '組別總分', '組平均分', '組員人數'],
+                ...stats.map(g => [g.name, `第 ${g.rank} 名`, g.total, g.avg, g.members.length]),
+                [],
+                ['全班個人積分明細（依組別排列）'],
+                ['組別', '學生姓名', '個人積分']
             ];
             stats.forEach(g => {
-                overviewRows.push([g.name, `第 ${g.rank} 名`, g.total, Number(g.avg), g.members.length]);
-            });
-            overviewRows.push([]);
-            overviewRows.push(['組別', '姓名', '個人積分']);
-            stats.forEach(g => {
                 g.members.forEach(m => {
-                    overviewRows.push([g.name, m.name, m.score]);
+                    summaryRows.push([g.name, m.name, m.score]);
                 });
             });
-            const wsOverview = XLSX.utils.aoa_to_sheet(overviewRows);
-            XLSX.utils.book_append_sheet(wb, wsOverview, '總覽與全班明細');
+            const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+            XLSX.utils.book_append_sheet(wb, wsSummary, '總覽與全班明細');
 
-            // 2~5. 各組獨立工作表
+            // Sheet 2~5: 各組獨立分頁
             stats.forEach(g => {
-                const groupRows = [
-                    [`${g.name} 個人積分明細`, '', `全組總分：${g.total} 分`, `組平均：${g.avg} 分`],
+                const groupLogs = appState.logs.filter(l => l.groupId === g.id || l.targetLabel.includes(g.name));
+                const sheetRows = [
+                    [`${g.name} 個人積分與歷次紀錄`],
+                    ['學生姓名', '目前個人積分'],
+                    ...g.members.map(m => [m.name, m.score]),
+                    ['全組總分', g.total],
+                    ['全組平均', g.avg],
                     [],
-                    ['座號/序號', '姓名', '個人積分']
+                    ['本組歷次加減分紀錄'],
+                    ['時間', '對象', '增減分數', '操作人員'],
+                    ...groupLogs.map(l => [l.time, l.targetLabel, l.delta, l.operator || ''])
                 ];
-                g.members.forEach((m, idx) => {
-                    groupRows.push([idx + 1, m.name, m.score]);
-                });
-                groupRows.push([]);
-                groupRows.push(['', '全組總分', g.total]);
-                groupRows.push(['', '組平均分', Number(g.avg)]);
-
-                const groupLogs = appState.logs.filter(l => l.targetName.includes(g.name) || g.members.some(m => l.targetName.includes(m.name)));
-                if (groupLogs.length > 0) {
-                    groupRows.push([]);
-                    groupRows.push(['該組歷次加減分紀錄', '分數變化', '說明', '時間']);
-                    groupLogs.forEach(l => {
-                        groupRows.push([l.targetName, l.delta, l.detail, l.time]);
-                    });
-                }
-
-                const wsGroup = XLSX.utils.aoa_to_sheet(groupRows);
+                const wsGroup = XLSX.utils.aoa_to_sheet(sheetRows);
                 const safeSheetName = g.name.replace(/[\\/?*[\]]/g, '_').slice(0, 31) || `第${g.id + 1}組`;
                 XLSX.utils.book_append_sheet(wb, wsGroup, safeSheetName);
             });
 
-            // 6. 歷次加減分紀錄
-            const logRows = [['時間', '對象', '分數變動', '說明']];
-            appState.logs.forEach(l => {
-                logRows.push([l.time, l.targetName, l.delta, l.detail]);
-            });
+            // Sheet 6: 歷次加減分完整流水帳
+            const logRows = [
+                ['時間', '加減分對象', '增減分數', '操作人員'],
+                ...appState.logs.map(l => [l.time, l.targetLabel, l.delta, l.operator || ''])
+            ];
             const wsLogs = XLSX.utils.aoa_to_sheet(logRows);
             XLSX.utils.book_append_sheet(wb, wsLogs, '歷次加減分紀錄');
 
-            // 7. 系統接續存檔碼（用於下次自動還原完整狀態）
-            const snapshotRows = [
+            // Sheet 7: 系統接續存檔碼（用於下次完美還原狀態）
+            const snapshotStr = JSON.stringify(appState);
+            const chunks = [];
+            for (let i = 0; i < snapshotStr.length; i += 30000) {
+                chunks.push([snapshotStr.slice(i, i + 30000)]);
+            }
+            const wsSnapshot = XLSX.utils.aoa_to_sheet([
                 ['SYSTEM_STATE_SNAPSHOT_V1'],
-                [JSON.stringify(appState)]
-            ];
-            const wsSnapshot = XLSX.utils.aoa_to_sheet(snapshotRows);
+                ...chunks
+            ]);
             XLSX.utils.book_append_sheet(wb, wsSnapshot, '系統接續存檔碼');
 
             return wb;
         }
 
-        function downloadExcel(customName) {
-            const wb = buildExcelWorkbook();
-            if (!wb) {
-                showToast('Excel 匯出模組尚未載入完成，請稍後再試！', 'error');
+        function downloadExcel(filename = SHARED_EXCEL_FILENAME) {
+            if (typeof XLSX === 'undefined') {
+                showToast('Excel 元件尚未載入完成，請稍後再試', 'error');
                 return;
             }
-            const fileName = customName || SHARED_EXCEL_FILENAME;
-            XLSX.writeFile(wb, fileName);
-            showToast(`已儲存固定檔案「${fileName}」（與 index.html 放同資料夾即可跨平台同步檢視）`, 'success');
+            const wb = buildExcelWorkbook();
+            XLSX.writeFile(wb, filename);
+            showToast(`已下載固定積分檔：${filename}`, 'success');
         }
 
         function handleImportExcel(event) {
-            const file = event.target.files && event.target.files[0];
+            const file = event.target.files?.[0];
             if (!file) return;
             const reader = new FileReader();
             reader.onload = function(e) {
                 try {
-                    const data = new Uint8Array(e.target.result);
-                    const wb = XLSX.read(data, { type: 'array' });
+                    const wb = XLSX.read(e.target.result, { type: 'array' });
                     const ok = applyWorkbookState(wb, false);
                     if (ok) {
                         saveState();
                         closeExportModal();
+                        showToast('已成功從 Excel 還原所有分數與歷史紀錄！', 'success');
                     } else {
-                        showToast('無法從此 Excel 辨識班級分數格式，請確認是否為本系統匯出的檔案', 'error');
+                        showToast('無法辨識此 Excel 格式，請確認為本系統匯出的檔案', 'error');
                     }
                 } catch (err) {
                     console.error('匯入 Excel 失敗:', err);
-                    showToast('讀取 Excel 檔案失敗：' + err.message, 'error');
+                    showToast('讀取 Excel 檔案失敗', 'error');
                 } finally {
                     event.target.value = '';
                 }
@@ -1715,15 +1854,14 @@
         }
 
         function applyWorkbookState(wb, silent = false) {
-            if (!wb || !wb.SheetNames) return false;
-
-            // 優先讀取「系統接續存檔碼」分頁
-            if (wb.SheetNames.includes('系統接續存檔碼')) {
-                const ws = wb.Sheets['系統接續存檔碼'];
-                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
-                if (rows && rows.length >= 2 && rows[1][0]) {
-                    try {
-                        const parsed = JSON.parse(rows[1][0]);
+            try {
+                // 1. 優先讀取隱藏狀態快照頁「系統接續存檔碼」
+                if (wb.SheetNames.includes('系統接續存檔碼')) {
+                    const ws = wb.Sheets['系統接續存檔碼'];
+                    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                    if (rows.length > 1 && rows[0][0] === 'SYSTEM_STATE_SNAPSHOT_V1') {
+                        const jsonStr = rows.slice(1).map(r => r[0] || '').join('');
+                        const parsed = JSON.parse(jsonStr);
                         if (parsed && Array.isArray(parsed.groups) && Array.isArray(parsed.students)) {
                             appState = {
                                 groups: parsed.groups,
@@ -1737,88 +1875,69 @@
                             localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
                             updateAuthUI();
                             renderAll();
-                            if (!silent) showToast('已完整還原 Excel 中的四組積分與歷史紀錄！', 'success');
                             return true;
                         }
-                    } catch (e) {
-                        console.warn('解析系統接續存檔碼失敗，改嘗試解析明細表:', e);
                     }
-                }
-            }
-
-            // 備援：從「總覽與全班明細」讀取組別與個人積分
-            if (wb.SheetNames.includes('總覽與全班明細')) {
-                const ws = wb.Sheets['總覽與全班明細'];
-                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
-                let startIdx = -1;
-                for (let i = 0; i < rows.length; i++) {
-                    if (rows[i] && rows[i][0] === '組別' && rows[i][1] === '姓名') {
-                        startIdx = i + 1;
-                        break;
-                    }
-                }
-                if (startIdx > 0) {
-                    const updatedStudents = [];
-                    let seq = 1;
-                    for (let i = startIdx; i < rows.length; i++) {
-                        const r = rows[i];
-                        if (!r || !r[0] || !r[1]) continue;
-                        const gIdx = appState.groups.findIndex(g => g.name === String(r[0]).trim());
-                        updatedStudents.push({
-                            id: 's' + (seq++),
-                            name: String(r[1]).trim(),
-                            groupId: gIdx >= 0 ? gIdx : 0,
-                            score: Number(r[2]) || 0
-                        });
-                    }
-                    if (updatedStudents.length > 0) {
-                        appState.students = updatedStudents;
-                        localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
-                        renderAll();
-                        if (!silent) showToast(`已從 Excel 載入 ${updatedStudents.length} 位同學的積分！`, 'success');
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        function downloadSystemHTML(customFileName) {
-            try {
-                let htmlContent = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-                const serializedState = JSON.stringify(appState, null, 12);
-                const stateRegex = /const DEFAULT_STATE = \{[\s\S]*?\n        \};/;
-                if (stateRegex.test(htmlContent)) {
-                    htmlContent = htmlContent.replace(stateRegex, `const DEFAULT_STATE = ${serializedState};`);
-                }
-                const emailsRegex = /const DEFAULT_AUTHORIZED_EMAILS = \[[\s\S]*?\];/;
-                if (emailsRegex.test(htmlContent)) {
-                    htmlContent = htmlContent.replace(
-                        emailsRegex,
-                        `const DEFAULT_AUTHORIZED_EMAILS = ${JSON.stringify(appState.authorizedEmails, null, 12)};`
-                    );
                 }
 
-                const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = customFileName || `classroom_score_tracker_${new Date().toISOString().slice(0, 10)}.html`;
-                a.click();
-                URL.revokeObjectURL(url);
-                showToast(`已下載完整系統網頁：${a.download}`, 'success');
-            } catch (err) {
-                console.error('匯出網頁失敗:', err);
-                showToast('匯出網頁失敗：' + err.message, 'error');
+                // 2. 若為手動編輯過的 Excel，則從「總覽與全班明細」解析分數
+                if (wb.SheetNames.includes('總覽與全班明細')) {
+                    const ws = wb.Sheets['總覽與全班明細'];
+                    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                    const headerIdx = rows.findIndex(r => r[0] === '組別' && r[1] === '學生姓名' && r[2] === '個人積分');
+                    if (headerIdx !== -1) {
+                        const newStudents = [];
+                        let sIdx = 1;
+                        for (let i = headerIdx + 1; i < rows.length; i++) {
+                            const [grpName, stName, stScore] = rows[i];
+                            if (!grpName || !stName) continue;
+                            const grp = appState.groups.find(g => g.name === String(grpName).trim());
+                            if (grp) {
+                                newStudents.push({
+                                    id: 's' + (sIdx++),
+                                    name: String(stName).trim(),
+                                    groupId: grp.id,
+                                    score: Number(stScore) || 0
+                                });
+                            }
+                        }
+                        if (newStudents.length > 0) {
+                            appState.students = newStudents;
+                            localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+                            renderAll();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            } catch (e) {
+                console.warn('解析工作簿狀態失敗:', e);
+                return false;
             }
         }
 
-        // ==================== 授權 Email 權限管理 ====================
+        function downloadSystemHTML(filename = null) {
+            let htmlContent = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+            const stateJson = JSON.stringify(appState, null, 4);
+            htmlContent = htmlContent.replace(
+                /const DEFAULT_STATE = \{[\s\S]*?\n        \};/,
+                `const DEFAULT_STATE = ${stateJson};`
+            );
+            const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename || `班級分組積分系統_${new Date().toISOString().slice(0, 10)}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast(`已下載完整系統網頁檔：${a.download}`, 'success');
+        }
+
+        // ==================== Email 權限控制 ====================
         function isEmailAuthorized(email) {
             if (!email) return false;
-            const clean = email.trim().toLowerCase();
-            const list = Array.isArray(appState.authorizedEmails) ? appState.authorizedEmails : DEFAULT_AUTHORIZED_EMAILS;
-            return list.some(e => String(e).trim().toLowerCase() === clean);
+            const normalized = email.trim().toLowerCase();
+            return appState.authorizedEmails.some(e => e.trim().toLowerCase() === normalized);
         }
 
         function isAuthorizedUser() {
@@ -1829,76 +1948,80 @@
             const authorized = isAuthorizedUser();
             const statusBadge = document.getElementById('auth-status-badge');
             const subtitle = document.getElementById('header-subtitle');
-            const authBtn = document.getElementById('btn-auth');
-            const authBtnIcon = document.getElementById('btn-auth-icon');
-            const authBtnText = document.getElementById('btn-auth-text');
-
-            const multiBtn = document.getElementById('btn-toggle-multi');
-            const undoBtn = document.getElementById('btn-undo');
-            const rosterBtn = document.getElementById('btn-roster');
+            const btnAuth = document.getElementById('btn-auth');
+            const btnAuthText = document.getElementById('btn-auth-text');
+            const btnMulti = document.getElementById('btn-toggle-multi');
+            const btnUndo = document.getElementById('btn-undo');
+            const btnRoster = document.getElementById('btn-roster');
 
             if (authorized) {
-                if (statusBadge) {
-                    statusBadge.className = 'text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1';
-                    statusBadge.innerHTML = `<i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i><span>管理員已登入</span>`;
-                }
+                statusBadge.className = 'text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1';
+                statusBadge.innerHTML = '<i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i><span>管理員計分模式</span>';
                 if (subtitle) {
-                    subtitle.textContent = `目前登入帳號：${currentUserEmail} • 點擊學生卡片或整組按鈕即可快速加減分`;
+                    const cloudPill = document.getElementById('cloud-live-pill');
+                    subtitle.textContent = `已登入：${currentUserEmail} • 點擊學生卡片或「整組加減分」快速計分`;
+                    if (cloudPill) subtitle.appendChild(cloudPill);
                 }
-                if (authBtn) {
-                    authBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-sm transition active:scale-95';
-                }
-                if (authBtnIcon) authBtnIcon.setAttribute('data-lucide', 'user-check');
-                if (authBtnText) authBtnText.textContent = currentUserEmail.split('@')[0];
+                btnAuth.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-sm transition active:scale-95';
+                btnAuthText.textContent = currentUserEmail.split('@')[0];
 
-                if (multiBtn) { multiBtn.classList.remove('hidden'); multiBtn.classList.add('flex'); }
-                if (undoBtn) { undoBtn.classList.remove('hidden'); undoBtn.classList.add('flex'); }
-                if (rosterBtn) { rosterBtn.classList.remove('hidden'); rosterBtn.classList.add('flex'); }
+                btnMulti.classList.remove('hidden');
+                btnMulti.classList.add('flex');
+                btnUndo.classList.remove('hidden');
+                btnUndo.classList.add('flex');
+                btnRoster.classList.remove('hidden');
+                btnRoster.classList.add('flex');
             } else {
-                if (statusBadge) {
-                    statusBadge.className = 'text-xs bg-slate-800 text-slate-300 border border-slate-600 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1';
-                    statusBadge.innerHTML = `<i data-lucide="eye" class="w-3.5 h-3.5 text-sky-400"></i><span>唯讀檢視模式</span>`;
-                }
+                statusBadge.className = 'text-xs bg-slate-800 text-slate-300 border border-slate-600 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1';
+                statusBadge.innerHTML = '<i data-lucide="eye" class="w-3.5 h-3.5 text-sky-400"></i><span>唯讀檢視模式</span>';
                 if (subtitle) {
+                    const cloudPill = document.getElementById('cloud-live-pill');
                     subtitle.textContent = sharedExcelLoaded
-                        ? `已自動同步網站資料夾中的 ${SHARED_EXCEL_FILENAME} 最新積分 • 跨平台即時檢視`
+                        ? `已連線同層 ${SHARED_EXCEL_FILENAME} • 每 5 秒自動即時同步最新分數`
                         : '目前為唯讀檢視模式 • 需使用授權 Email 登入才可進行加減分';
+                    if (cloudPill) subtitle.appendChild(cloudPill);
                 }
-                if (authBtn) {
-                    authBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-sm transition active:scale-95';
-                }
-                if (authBtnIcon) authBtnIcon.setAttribute('data-lucide', 'lock');
-                if (authBtnText) authBtnText.textContent = '管理員登入';
+                btnAuth.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-sm transition active:scale-95';
+                btnAuthText.textContent = '管理員登入';
 
-                if (multiBtn) { multiBtn.classList.add('hidden'); multiBtn.classList.remove('flex'); }
-                if (undoBtn) { undoBtn.classList.add('hidden'); undoBtn.classList.remove('flex'); }
-                if (rosterBtn) { rosterBtn.classList.add('hidden'); rosterBtn.classList.remove('flex'); }
+                btnMulti.classList.add('hidden');
+                btnMulti.classList.remove('flex');
+                btnUndo.classList.add('hidden');
+                btnUndo.classList.remove('flex');
+                btnRoster.classList.add('hidden');
+                btnRoster.classList.remove('flex');
+
+                if (isMultiSelectMode) {
+                    isMultiSelectMode = false;
+                    selectedStudentIds.clear();
+                    document.getElementById('multi-select-bar')?.classList.add('hidden');
+                    document.getElementById('multi-select-badge')?.classList.add('hidden');
+                }
             }
+            updateUndoButton();
             updateExcelSyncUI();
         }
 
         function openAuthModal() {
-            const modal = document.getElementById('auth-modal');
             const loginSec = document.getElementById('auth-login-section');
             const manageSec = document.getElementById('auth-manage-section');
             const errMsg = document.getElementById('auth-error-msg');
-            if (errMsg) errMsg.classList.add('hidden');
+            errMsg.classList.add('hidden');
 
             if (isAuthorizedUser()) {
                 loginSec.classList.add('hidden');
                 manageSec.classList.remove('hidden');
                 document.getElementById('logged-in-email-display').textContent = currentUserEmail;
-                document.getElementById('authorized-emails-textarea').value = (appState.authorizedEmails || []).join('\n');
+                document.getElementById('authorized-emails-textarea').value = appState.authorizedEmails.join('\n');
             } else {
-                manageSec.classList.add('hidden');
                 loginSec.classList.remove('hidden');
+                manageSec.classList.add('hidden');
                 const input = document.getElementById('login-email-input');
-                if (input) {
-                    input.value = '';
-                    setTimeout(() => input.focus(), 60);
-                }
+                input.value = '';
+                setTimeout(() => input.focus(), 50);
             }
 
+            const modal = document.getElementById('auth-modal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
             if (window.lucide) lucide.createIcons();
@@ -1917,52 +2040,60 @@
 
             if (!email || !isEmailAuthorized(email)) {
                 errMsg.classList.remove('hidden');
-                input.focus();
                 return;
             }
 
-            currentUserEmail = email;
-            sessionStorage.setItem(AUTH_SESSION_KEY, email);
             errMsg.classList.add('hidden');
+            currentUserEmail = email;
+            try {
+                sessionStorage.setItem(AUTH_SESSION_KEY, email);
+                localStorage.setItem(AUTH_SESSION_KEY, email);
+            } catch (e) {}
 
-            closeAuthModal();
             updateAuthUI();
             renderAll();
-            showToast(`歡迎回來！已解鎖計分權限 (${email})`, 'success');
+            closeAuthModal();
+            showToast(`歡迎回來，${email}！已解鎖加減分與管理權限`, 'success');
         }
 
         function handleLogout() {
-            currentUserEmail = '';
-            sessionStorage.removeItem(AUTH_SESSION_KEY);
-            isMultiSelectMode = false;
-            selectedStudentIds.clear();
-            closeAuthModal();
+            currentUserEmail = null;
+            try {
+                sessionStorage.removeItem(AUTH_SESSION_KEY);
+                localStorage.removeItem(AUTH_SESSION_KEY);
+            } catch (e) {}
             updateAuthUI();
             renderAll();
-            showToast('已登出，目前切換回唯讀檢視模式', 'info');
+            closeAuthModal();
+            showToast('已登出並切換回「唯讀檢視模式」', 'info');
         }
 
         function saveAuthorizedEmails() {
-            const textarea = document.getElementById('authorized-emails-textarea');
-            const emails = (textarea.value || '')
+            if (!isAuthorizedUser()) return;
+            const raw = document.getElementById('authorized-emails-textarea').value;
+            const list = raw
                 .split('\n')
                 .map(e => e.trim().toLowerCase())
                 .filter(e => e && e.includes('@'));
 
-            // 確保目前操作者不會把自己鎖在外面
-            if (currentUserEmail && !emails.includes(currentUserEmail)) {
-                emails.unshift(currentUserEmail);
+            if (list.length === 0) {
+                showToast('至少需保留一組有效的授權 Email！', 'error');
+                return;
             }
 
-            appState.authorizedEmails = [...new Set(emails)];
+            appState.authorizedEmails = Array.from(new Set(list));
             saveState();
-            closeAuthModal();
-            showToast(`已更新授權白名單（共 ${appState.authorizedEmails.length} 組帳號）`, 'success');
+            if (!isAuthorizedUser()) {
+                handleLogout();
+            } else {
+                closeAuthModal();
+                showToast('授權 Email 白名單已更新並儲存！', 'success');
+            }
         }
 
-        // ==================== 通用工具函式與啟動 ====================
+        // ==================== 工具函式與啟動 ====================
         function escapeHTML(str) {
-            return String(str ?? '')
+            return String(str)
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
@@ -1973,39 +2104,37 @@
         function showToast(message, type = 'info') {
             const container = document.getElementById('toast-container');
             if (!container) return;
-            const toast = document.createElement('div');
-            const styles = {
-                success: 'bg-emerald-600 text-white border-emerald-400',
-                error: 'bg-rose-600 text-white border-rose-400',
+            const colors = {
+                success: 'bg-emerald-600 text-white border-emerald-400/50',
+                error: 'bg-rose-600 text-white border-rose-400/50',
                 warning: 'bg-amber-500 text-slate-950 border-amber-300',
                 info: 'bg-slate-800 text-slate-100 border-slate-600'
             };
-            toast.className = `px-4 py-2.5 rounded-2xl border shadow-2xl font-bold text-xs sm:text-sm transition-all duration-300 ${styles[type] || styles.info}`;
+            const toast = document.createElement('div');
+            toast.className = `px-4 py-2.5 rounded-2xl border shadow-2xl font-bold text-xs sm:text-sm transition-all duration-300 ${colors[type] || colors.info}`;
             toast.textContent = message;
             container.appendChild(toast);
-
             setTimeout(() => {
                 toast.style.opacity = '0';
-                toast.style.transform = 'translateY(8px)';
+                toast.style.transform = 'translateY(10px)';
                 setTimeout(() => toast.remove(), 300);
-            }, 3000);
+            }, 2600);
         }
 
-        // 點擊視窗背景遮罩可關閉 Modal
+        // 點擊背景遮罩關閉彈窗
         ['score-modal', 'roster-modal', 'leaderboard-modal', 'export-modal', 'auth-modal'].forEach(id => {
             const el = document.getElementById(id);
             if (el) {
-                el.addEventListener('click', () => {
-                    el.classList.add('hidden');
-                    el.classList.remove('flex');
-                    if (id === 'score-modal') activeModalTarget = null;
+                el.addEventListener('click', (e) => {
+                    if (e.target === el) {
+                        el.classList.add('hidden');
+                        el.classList.remove('flex');
+                    }
                 });
             }
         });
 
-        window.addEventListener('DOMContentLoaded', () => {
-            initApp();
-        });
+        window.addEventListener('DOMContentLoaded', initApp);
     </script>
 </body>
 </html>
