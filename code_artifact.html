@@ -65,11 +65,11 @@
             <!-- 標題與狀態 -->
             <div class="flex items-center gap-3">
                 <div class="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-500/20">
-                    <i data-lucide="trophy" class="w-6 h-6 text-yellow-300"></i>
+                    <button onclick="openExportModal()" class="text-xs text-indigo-400 hover:text-indigo-300 font-semibold">匯出 / 同步設定</button>
                 </div>
                 <div>
                     <h1 class="text-lg sm:text-xl font-black tracking-tight text-white flex items-center gap-2">
-                        班級分組積分板
+                        班級分組積分戰況板
                         <span id="auth-status-badge" class="text-xs bg-slate-800 text-slate-300 border border-slate-600 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
                             <i data-lucide="eye" class="w-3.5 h-3.5 text-sky-400"></i>
                             <span>唯讀檢視模式</span>
@@ -604,7 +604,7 @@
         // 預設授權白名單（管理員登入後可自由增刪）
         const DEFAULT_AUTHORIZED_EMAILS = [
             'teacher@school.edu.tw',
-            'admin'
+            'admin@gmail.com'
         ];
 
         // 預設四組名單（共19人）
@@ -663,8 +663,22 @@
         // ==================== GitHub 同層 scores.xlsx 直寫設定 (線上網頁免下載直接更新遠端同層檔案) ====================
         function getGitHubSyncConfig() {
             try {
+                // 優先檢查網址參數是否帶有分享設定 (?gh_owner=...&gh_repo=...)
+                const params = new URLSearchParams(window.location.search);
+                const urlOwner = params.get('gh_owner');
+                const urlRepo = params.get('gh_repo');
+                const urlBranch = params.get('gh_branch') || 'main';
+
                 const raw = localStorage.getItem(GITHUB_SYNC_KEY);
-                return raw ? JSON.parse(raw) : null;
+                const saved = raw ? JSON.parse(raw) : {};
+
+                const owner = (urlOwner || saved.owner || '').trim();
+                const repo = (urlRepo || saved.repo || '').trim();
+                const branch = (urlBranch || saved.branch || 'main').trim();
+                const token = (saved.token || '').trim();
+
+                if (!owner && !repo && !token) return null;
+                return { owner, repo, branch, token };
             } catch (e) {
                 return null;
             }
@@ -677,7 +691,7 @@
                 branch: (branch || 'main').trim(),
                 token: (token || '').trim()
             };
-            if (!cfg.owner || !cfg.repo || !cfg.token) {
+            if (!cfg.owner && !cfg.repo && !cfg.token) {
                 localStorage.removeItem(GITHUB_SYNC_KEY);
                 return null;
             }
@@ -792,11 +806,11 @@
                 text.textContent = excelSyncStatus === 'syncing'
                     ? '直接寫入 scores.xlsx...'
                     : `已綁定直寫：${boundExcelHandle.name || SHARED_EXCEL_FILENAME}`;
-            } else if (getGitHubSyncConfig()) {
+            } else if (getGitHubSyncConfig() && getGitHubSyncConfig().token) {
                 btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-xs sm:text-sm transition active:scale-95';
                 if (icon) icon.className = 'w-4 h-4 text-emerald-400';
                 text.textContent = excelSyncStatus === 'syncing'
-                    ? '同步遠端 scores.xlsx...'
+                    ? '寫入同層 scores.xlsx...'
                     : `雲端直寫同層：${SHARED_EXCEL_FILENAME}`;
             } else if (cachedExcelHandle) {
                 btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-xs sm:text-sm transition active:scale-95 animate-pulse';
@@ -921,15 +935,53 @@
         async function loadSharedExcelFromSameDirectory(silent = false) {
             if (typeof XLSX === 'undefined') return false;
             try {
-                const res = await fetch(`./${SHARED_EXCEL_FILENAME}?t=${Date.now()}`, { cache: 'no-store' });
-                if (!res.ok) return false;
-                const arrayBuffer = await res.arrayBuffer();
-                if (!arrayBuffer || arrayBuffer.byteLength === 0) return false;
+                const cfg = getGitHubSyncConfig();
+                let arrayBuffer = null;
+                let sig = '';
 
-                const bytes = new Uint8Array(arrayBuffer);
-                const sig = `${res.headers.get('Last-Modified') || ''}_${bytes.byteLength}_${bytes[bytes.length - 1] || 0}_${bytes[Math.floor(bytes.length / 2)] || 0}`;
-                if (silent && sharedExcelLoaded && sig === sharedExcelLastSignature) {
-                    return true;
+                // 1. 若有設定 GitHub 專案資訊，優先透過 GitHub Contents API 讀取最新 scores.xlsx（零 CDN 快取延遲）
+                if (cfg && cfg.owner && cfg.repo) {
+                    try {
+                        const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}?ref=${encodeURIComponent(cfg.branch || 'main')}&t=${Date.now()}`;
+                        const headers = { 'Accept': 'application/vnd.github+json' };
+                        if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
+                        const apiRes = await fetch(apiUrl, { headers, cache: 'no-store' });
+                        if (apiRes.ok) {
+                            const meta = await apiRes.json();
+                            if (meta && meta.sha) {
+                                sig = `gh_${meta.sha}`;
+                                if (silent && sharedExcelLoaded && sig === sharedExcelLastSignature) {
+                                    return true;
+                                }
+                                if (meta.content) {
+                                    const cleanB64 = meta.content.replace(/\s/g, '');
+                                    const binStr = atob(cleanB64);
+                                    const len = binStr.length;
+                                    const bytes = new Uint8Array(len);
+                                    for (let i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
+                                    arrayBuffer = bytes.buffer;
+                                } else if (meta.download_url) {
+                                    const rawRes = await fetch(`${meta.download_url}?t=${Date.now()}`, { cache: 'no-store' });
+                                    if (rawRes.ok) arrayBuffer = await rawRes.arrayBuffer();
+                                }
+                            }
+                        }
+                    } catch (ghErr) {
+                        console.warn('透過 GitHub API 讀取同層 scores.xlsx 失敗，改用相對路徑讀取:', ghErr);
+                    }
+                }
+
+                // 2. 退回讀取同層相對路徑 ./scores.xlsx
+                if (!arrayBuffer) {
+                    const res = await fetch(`./${SHARED_EXCEL_FILENAME}?t=${Date.now()}`, { cache: 'no-store' });
+                    if (!res.ok) return false;
+                    arrayBuffer = await res.arrayBuffer();
+                    if (!arrayBuffer || arrayBuffer.byteLength === 0) return false;
+                    const bytes = new Uint8Array(arrayBuffer);
+                    sig = `rel_${res.headers.get('Last-Modified') || ''}_${bytes.byteLength}_${bytes[bytes.length - 1] || 0}_${bytes[Math.floor(bytes.length / 2)] || 0}`;
+                    if (silent && sharedExcelLoaded && sig === sharedExcelLastSignature) {
+                        return true;
+                    }
                 }
 
                 const wb = XLSX.read(arrayBuffer, { type: 'array' });
@@ -941,7 +993,7 @@
                     updateExcelSyncUI();
                     if (!silent) {
                         showToast(`已載入同層最新 ${SHARED_EXCEL_FILENAME}`, 'success');
-                    } else if (isUpdate && !isAuthorizedUser()) {
+                    } else if (isUpdate) {
                         showToast(`偵測到 ${SHARED_EXCEL_FILENAME} 更新，已自動同步最新分數！`, 'info');
                     }
                 }
@@ -954,10 +1006,11 @@
         function startSharedExcelAutoPolling() {
             if (sharedExcelPollTimer) clearInterval(sharedExcelPollTimer);
             sharedExcelPollTimer = setInterval(() => {
-                if (!isAuthorizedUser() && !document.hidden) {
+                // 無論檢視者或管理員，只要頁面在前景且未正在寫入中，每 3 秒自動檢查同層 scores.xlsx 更新
+                if (!document.hidden && excelSyncStatus !== 'syncing') {
                     loadSharedExcelFromSameDirectory(true);
                 }
-            }, 5000);
+            }, 3000);
         }
 
         async function handleExcelSyncClick() {
@@ -965,7 +1018,7 @@
                 if (boundExcelHandle) {
                     await autoWriteToBoundExcel();
                     showToast(`已直接寫入 ${boundExcelHandle.name || SHARED_EXCEL_FILENAME}（免下載）`, 'success');
-                } else if (getGitHubSyncConfig()) {
+                } else if (getGitHubSyncConfig() && getGitHubSyncConfig().token) {
                     const ok = await pushExcelToGitHubSameFolder();
                     if (ok) showToast(`已直接更新遠端同層 ${SHARED_EXCEL_FILENAME}`, 'success');
                 } else if (cachedExcelHandle && canUseNativeFilePicker()) {
@@ -1021,7 +1074,7 @@
                 if (loaded) {
                     const subtitle = document.getElementById('header-subtitle');
                     if (subtitle && !isAuthorizedUser()) {
-                        subtitle.textContent = `已連線同層 ${SHARED_EXCEL_FILENAME} • 每 5 秒自動即時同步最新分數`;
+                        subtitle.textContent = `已連線同層 ${SHARED_EXCEL_FILENAME} • 每 3 秒自動即時同步最新分數`;
                     }
                 }
             });
@@ -1040,7 +1093,7 @@
             if (boundExcelHandle) {
                 autoWriteToBoundExcel();
             }
-            if (getGitHubSyncConfig()) {
+            if (getGitHubSyncConfig() && getGitHubSyncConfig().token) {
                 pushExcelToGitHubSameFolder();
             }
             if (!skipCloud && window.pushStateToCloud) {
@@ -1686,22 +1739,46 @@
                 <div class="flex items-center justify-between gap-2 mb-2">
                     <div class="text-xs font-black text-indigo-300 flex items-center gap-1.5">
                         <i data-lucide="cloud-upload" class="w-4 h-4 text-indigo-400"></i>
-                        <span>線上網頁免下載直寫同層 scores.xlsx（GitHub Pages 同步設定）</span>
+                        <span>跨平台免下載直寫同層 scores.xlsx（GitHub 雲端即時同步設定）</span>
                     </div>
                     <span class="text-[11px] ${existing.token ? 'text-emerald-400 font-bold' : 'text-slate-400'}">
-                        ${existing.token ? '● 已啟用雲端直寫' : '選填設定'}
+                        ${existing.token ? '● 已啟用雲端直寫' : '跨平台同步必填'}
                     </span>
                 </div>
-                <p class="text-[11px] text-slate-400 mb-2.5">設定後，管理員在線上網頁加減分會直接更新同資料夾的 <code class="text-amber-300">scores.xlsx</code>，全班檢視者自動即時看到最新分數，完全免下載！</p>
-                <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <p class="text-[11px] text-slate-400 mb-2.5">管理員填入 Token 後，每次加減分會<strong>直接寫入同資料夾的 <code class="text-amber-300">scores.xlsx</code>（免下載）</strong>；點擊右側「複製檢視者即時連結」傳給全班，手機/平板/電腦打開即每 3 秒同步最新分數！</p>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-2">
                     <input type="text" id="gh-sync-owner" value="${escapeHTML(defaultOwner)}" placeholder="GitHub 帳號 (例: a008548-skh)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
                     <input type="text" id="gh-sync-repo" value="${escapeHTML(defaultRepo)}" placeholder="專案名稱 (例: nycuihha15)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
                     <input type="password" id="gh-sync-token" value="${escapeHTML(existing.token || '')}" placeholder="GitHub Token (ghp_...)" class="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500">
                     <button onclick="handleSaveGitHubSyncSettings()" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition active:scale-95">
-                        儲存並立即同步
+                        儲存並寫入 scores.xlsx
+                    </button>
+                </div>
+                <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
+                    <span class="text-[11px] text-slate-400">分享給檢視者（不含管理員 Token，安全唯讀）：</span>
+                    <button onclick="copyViewerShareLink()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 font-bold text-xs transition active:scale-95">
+                        <i data-lucide="share-2" class="w-3.5 h-3.5"></i>
+                        <span>複製跨平台檢視者即時同步連結</span>
                     </button>
                 </div>
             `;
+        }
+
+        function copyViewerShareLink() {
+            const owner = (document.getElementById('gh-sync-owner')?.value || '').trim();
+            const repo = (document.getElementById('gh-sync-repo')?.value || '').trim();
+            const baseUrl = window.location.origin + window.location.pathname;
+            const shareUrl = (owner && repo)
+                ? `${baseUrl}?gh_owner=${encodeURIComponent(owner)}&gh_repo=${encodeURIComponent(repo)}&gh_branch=main`
+                : baseUrl;
+
+            const tempInput = document.createElement('input');
+            tempInput.value = shareUrl;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+            showToast('已複製跨平台檢視者同步網址！傳給全班即可即時觀看', 'success');
         }
 
         async function handleSaveGitHubSyncSettings() {
@@ -1977,7 +2054,7 @@
                 if (subtitle) {
                     const cloudPill = document.getElementById('cloud-live-pill');
                     subtitle.textContent = sharedExcelLoaded
-                        ? `已連線同層 ${SHARED_EXCEL_FILENAME} • 每 5 秒自動即時同步最新分數`
+                        ? `已連線同層 ${SHARED_EXCEL_FILENAME} • 每 3 秒自動即時同步最新分數`
                         : '目前為唯讀檢視模式 • 需使用授權 Email 登入才可進行加減分';
                     if (cloudPill) subtitle.appendChild(cloudPill);
                 }
