@@ -944,35 +944,45 @@
                 let arrayBuffer = null;
                 let sig = '';
 
-                // 1. 若有設定 GitHub 專案資訊，優先透過 GitHub Contents API 讀取最新 scores.xlsx（零 CDN 快取延遲）
+                // 1. 優先透過 GitHub API 取得最新 commit 與 scores.xlsx 的 blob sha（完全繞過 CDN 與瀏覽器快取，檢視者免 Token 也能即時看到最新分數）
                 if (cfg && cfg.owner && cfg.repo) {
                     try {
-                        const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}?ref=${encodeURIComponent(cfg.branch || 'main')}&t=${Date.now()}`;
                         const headers = { 'Accept': 'application/vnd.github+json' };
                         if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
-                        const apiRes = await fetch(apiUrl, { headers, cache: 'no-store' });
-                        if (apiRes.ok) {
-                            const meta = await apiRes.json();
-                            if (meta && meta.sha) {
-                                sig = `gh_${meta.sha}`;
+
+                        // 透過 Git Trees API 取得最新目錄樹中 scores.xlsx 的最新 SHA
+                        const treeUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?t=${Date.now()}`;
+                        const treeRes = await fetch(treeUrl, { headers, cache: 'no-store' });
+                        if (treeRes.ok) {
+                            const treeData = await treeRes.json();
+                            const fileNode = Array.isArray(treeData.tree)
+                                ? treeData.tree.find(item => item.path === SHARED_EXCEL_FILENAME)
+                                : null;
+
+                            if (fileNode && fileNode.sha) {
+                                sig = `gh_blob_${fileNode.sha}`;
                                 if (silent && sharedExcelLoaded && sig === sharedExcelLastSignature) {
                                     return true;
                                 }
-                                if (meta.content) {
-                                    const cleanB64 = meta.content.replace(/\s/g, '');
-                                    const binStr = atob(cleanB64);
-                                    const len = binStr.length;
-                                    const bytes = new Uint8Array(len);
-                                    for (let i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
-                                    arrayBuffer = bytes.buffer;
-                                } else if (meta.download_url) {
-                                    const rawRes = await fetch(`${meta.download_url}?t=${Date.now()}`, { cache: 'no-store' });
-                                    if (rawRes.ok) arrayBuffer = await rawRes.arrayBuffer();
+
+                                // 直接以該最新 blob sha 抓取檔案內容，保證 100% 是最新寫入的版本
+                                const blobUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/git/blobs/${fileNode.sha}`;
+                                const blobRes = await fetch(blobUrl, { headers, cache: 'no-store' });
+                                if (blobRes.ok) {
+                                    const blobData = await blobRes.json();
+                                    if (blobData && blobData.content) {
+                                        const cleanB64 = blobData.content.replace(/\s/g, '');
+                                        const binStr = atob(cleanB64);
+                                        const len = binStr.length;
+                                        const bytes = new Uint8Array(len);
+                                        for (let i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
+                                        arrayBuffer = bytes.buffer;
+                                    }
                                 }
                             }
                         }
                     } catch (ghErr) {
-                        console.warn('透過 GitHub API 讀取同層 scores.xlsx 失敗，改用相對路徑讀取:', ghErr);
+                        console.warn('透過 GitHub Git API 讀取同層 scores.xlsx 失敗，改用相對路徑讀取:', ghErr);
                     }
                 }
 
