@@ -715,28 +715,45 @@
             }
 
             isGitHubPushing = true;
-            excelSyncStatus = 'syncing';
-            updateExcelSyncUI();
-
             try {
+                excelSyncStatus = 'syncing';
+                updateExcelSyncUI();
+
+                const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}`;
                 const maxRetries = 3;
+
                 for (let attempt = 1; attempt <= maxRetries; attempt++) {
                     const wb = buildExcelWorkbook();
                     const base64Content = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
-                    const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}`;
 
-                    // 取得最新 scores.xlsx 的 sha（加入時間戳避免瀏覽器快取舊 sha）
+                    // 取得最新 scores.xlsx 的 sha（透過 Git Trees API 繞過 Contents API 的 CDN 快取）
                     let sha = undefined;
-                    const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(cfg.branch)}&t=${Date.now()}`, {
+                    const treeUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/git/trees/${encodeURIComponent(cfg.branch)}?t=${Date.now()}`;
+                    const treeRes = await fetch(treeUrl, {
                         cache: 'no-store',
                         headers: {
                             'Authorization': `Bearer ${cfg.token}`,
                             'Accept': 'application/vnd.github+json'
                         }
                     });
-                    if (getRes.ok) {
-                        const existing = await getRes.json();
-                        sha = existing.sha;
+                    if (treeRes.ok) {
+                        const treeData = await treeRes.json();
+                        const node = Array.isArray(treeData.tree)
+                            ? treeData.tree.find(item => item.path === SHARED_EXCEL_FILENAME)
+                            : null;
+                        if (node && node.sha) sha = node.sha;
+                    } else {
+                        const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(cfg.branch)}&t=${Date.now()}`, {
+                            cache: 'no-store',
+                            headers: {
+                                'Authorization': `Bearer ${cfg.token}`,
+                                'Accept': 'application/vnd.github+json'
+                            }
+                        });
+                        if (getRes.ok) {
+                            const existing = await getRes.json();
+                            sha = existing.sha;
+                        }
                     }
 
                     const putRes = await fetch(apiUrl, {
@@ -1049,8 +1066,8 @@
         function startSharedExcelAutoPolling() {
             if (sharedExcelPollTimer) clearInterval(sharedExcelPollTimer);
             sharedExcelPollTimer = setInterval(() => {
-                // 無論檢視者或管理員，只要頁面在前景且未正在寫入中，每 3 秒自動檢查同層 scores.xlsx 更新
-                if (!document.hidden && excelSyncStatus !== 'syncing') {
+                // 僅在「未登入的檢視者模式」且頁面在前景時，每 3 秒自動同步最新 scores.xlsx（避免干擾管理員計分寫入）
+                if (!document.hidden && !isAuthorizedUser() && excelSyncStatus !== 'syncing') {
                     loadSharedExcelFromSameDirectory(true);
                 }
             }, 3000);
