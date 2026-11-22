@@ -1,0 +1,2101 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級分組積分快速計算系統</title>
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Google Fonts: Noto Sans TC 與 Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <!-- 載入 Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- 載入 SheetJS (xlsx) 以支援匯出真正的 Excel (.xlsx) 分組工作表檔案 -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+            background-color: #0f172a; /* 深色高對比底色，適合教室投影與平板 */
+            color: #f8fafc;
+            user-select: none; /* 防止快速點擊時誤選文字 */
+        }
+        /* 自訂捲軸樣式 */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(30, 41, 59, 0.5);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(100, 116, 139, 0.6);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(148, 163, 184, 0.8);
+        }
+        /* 分數跳動動畫 */
+        @keyframes scorePop {
+            0% { transform: scale(1); }
+            40% { transform: scale(1.35); color: #fde047; }
+            100% { transform: scale(1); }
+        }
+        .animate-score-pop {
+            animation: scorePop 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        /* 浮動加分提示動畫 */
+        @keyframes floatUp {
+            0% { opacity: 1; transform: translateY(0) scale(0.8); }
+            50% { opacity: 1; transform: translateY(-20px) scale(1.1); }
+            100% { opacity: 0; transform: translateY(-35px) scale(1); }
+        }
+        .floating-badge {
+            position: absolute;
+            pointer-events: none;
+            animation: floatUp 0.8s ease-out forwards;
+            z-index: 50;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- 頂部導覽與總控台 -->
+    <header class="bg-slate-900/95 border-b border-slate-800 sticky top-0 z-30 backdrop-blur-md shadow-lg">
+        <div class="max-w-[1600px] mx-auto px-3 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+            <!-- 標題與狀態 -->
+            <div class="flex items-center gap-3">
+                <div class="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-500/20">
+                    <i data-lucide="trophy" class="w-6 h-6 text-yellow-300"></i>
+                </div>
+                <div>
+                    <h1 class="text-lg sm:text-xl font-black tracking-tight text-white flex items-center gap-2">
+                        班級分組積分戰況板
+                        <span id="auth-status-badge" class="text-xs bg-slate-800 text-slate-300 border border-slate-600 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <i data-lucide="eye" class="w-3.5 h-3.5 text-sky-400"></i>
+                            <span>唯讀檢視模式</span>
+                        </span>
+                        <span id="multi-select-badge" class="hidden text-xs bg-amber-500 text-slate-950 font-bold px-2 py-0.5 rounded-full animate-pulse">多選模式中</span>
+                    </h1>
+                    <p id="header-subtitle" class="text-xs text-slate-400 hidden sm:block">目前為唯讀檢視模式 • 需使用授權 Email 登入才可進行加減分</p>
+                </div>
+            </div>
+
+            <!-- 核心功能按鈕列 -->
+            <div class="flex flex-wrap items-center gap-2">
+                <!-- Excel 自動即時存檔狀態與綁定按鈕 -->
+                <button id="btn-excel-sync" onclick="handleExcelSyncClick()" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold text-xs sm:text-sm transition active:scale-95" title="綁定本機 Excel 檔案後，每次加減分將自動即時寫入">
+                    <i data-lucide="file-spreadsheet" id="excel-sync-icon" class="w-4 h-4 text-slate-400"></i>
+                    <span id="excel-sync-text">綁定自動存檔 Excel</span>
+                </button>
+
+                <!-- 登入 / 權限狀態按鈕 -->
+                <button id="btn-auth" onclick="openAuthModal()" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-sm transition active:scale-95">
+                    <i data-lucide="lock" id="btn-auth-icon" class="w-4 h-4"></i>
+                    <span id="btn-auth-text">管理員登入</span>
+                </button>
+
+                <!-- 多選模式切換 (僅授權帳號顯示) -->
+                <button id="btn-toggle-multi" onclick="toggleMultiSelect()" class="hidden items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-sm transition active:scale-95">
+                    <i data-lucide="check-square" class="w-4 h-4 text-amber-400"></i>
+                    <span>多選學生</span>
+                </button>
+
+                <!-- 復原上一動 (Undo) (僅授權帳號顯示) -->
+                <button id="btn-undo" onclick="undoLastAction()" disabled class="hidden items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-slate-200 border border-slate-700 font-bold text-sm transition active:scale-95" title="復原上一次加減分">
+                    <i data-lucide="undo-2" class="w-4 h-4 text-sky-400"></i>
+                    <span>復原</span>
+                </button>
+
+                <!-- 個人排行榜按鈕 -->
+                <button onclick="openLeaderboardModal()" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-sm transition active:scale-95">
+                    <i data-lucide="award" class="w-4 h-4 text-yellow-400"></i>
+                    <span class="hidden md:inline">個人榜</span>
+                </button>
+
+                <!-- 名單管理按鈕 (僅授權帳號顯示) -->
+                <button id="btn-roster" onclick="openRosterModal()" class="hidden items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-sm transition active:scale-95">
+                    <i data-lucide="users" class="w-4 h-4 text-emerald-400"></i>
+                    <span class="hidden md:inline">名單管理</span>
+                </button>
+
+                <!-- 匯出成績按鈕 -->
+                <button onclick="openExportModal()" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-md shadow-indigo-600/20 transition active:scale-95">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                    <span class="hidden sm:inline">匯出 / 備份</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 多選模式操作列 (僅在多選模式開啟時顯示) -->
+        <div id="multi-select-bar" class="hidden bg-amber-500/15 border-t border-amber-500/30 px-4 py-2.5">
+            <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-2 text-amber-300 font-bold text-sm">
+                    <i data-lucide="users-round" class="w-5 h-5"></i>
+                    <span>已選擇 <span id="selected-count" class="text-white text-lg mx-1 underline">0</span> 位同學</span>
+                    <button onclick="clearSelection()" class="ml-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded-lg border border-slate-600">清除選取</button>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick="openScoreModalForSelected()" id="btn-score-selected" disabled class="px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-black text-sm shadow-lg transition active:scale-95 flex items-center gap-1.5">
+                        <i data-lucide="zap" class="w-4 h-4"></i>
+                        為選取同學加減分
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- 主內容區：四組並排 + 側邊即時動態 -->
+    <main class="flex-1 max-w-[1800px] w-full mx-auto p-3 sm:p-5 grid grid-cols-1 2xl:grid-cols-12 gap-4 sm:gap-5">
+        
+        <!-- 左側/中央：四組並排戰況區 (佔 9 欄，桌面版四欄並排) -->
+        <div id="groups-container" class="2xl:col-span-9 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3.5 sm:gap-4 items-start">
+            <!-- 由 JavaScript 動態渲染四組卡片 -->
+        </div>
+
+        <!-- 右側：即時操作紀錄 (History Log) 與 個人前三名速覽 (佔 3 欄) -->
+        <aside class="2xl:col-span-3 grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-1 gap-4">
+            <!-- 個人前三名速覽卡片 -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="font-bold text-slate-200 flex items-center gap-2 text-sm">
+                        <i data-lucide="crown" class="w-4 h-4 text-yellow-400"></i>
+                        個人積分前三名
+                    </h2>
+                    <button onclick="openLeaderboardModal()" class="text-xs text-indigo-400 hover:text-indigo-300 font-semibold">查看全班 &rarr;</button>
+                </div>
+                <div id="top3-list" class="space-y-2">
+                    <!-- JS 動態生成 -->
+                </div>
+            </div>
+
+            <!-- 即時操作紀錄 (History Log) -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl flex-1 flex flex-col min-h-[320px] max-h-[600px]">
+                <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
+                    <h2 class="font-bold text-slate-200 flex items-center gap-2 text-sm">
+                        <i data-lucide="history" class="w-4 h-4 text-sky-400"></i>
+                        即時加減分紀錄
+                    </h2>
+                    <span id="log-count" class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">0 筆</span>
+                </div>
+                <div id="history-log-list" class="flex-1 overflow-y-auto space-y-2 pr-1">
+                    <!-- JS 動態生成 -->
+                </div>
+            </div>
+        </aside>
+    </main>
+
+    <!-- ==================== 彈出視窗區 (Modals) ==================== -->
+
+    <!-- 1. 極速加減分面板 Modal -->
+    <div id="score-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border-2 border-slate-700 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl transform transition-all" onclick="event.stopPropagation()">
+            <!-- 標題區 -->
+            <div class="flex items-start justify-between gap-3 mb-4">
+                <div>
+                    <span id="modal-target-badge" class="inline-block text-xs font-bold px-2.5 py-1 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 mb-1.5">單人加分</span>
+                    <h3 id="modal-target-title" class="text-2xl sm:text-3xl font-black text-white tracking-tight">王小明</h3>
+                    <p id="modal-target-subtitle" class="text-sm text-slate-400 mt-0.5">目前積分：<span class="text-yellow-400 font-bold">15</span> 分</p>
+                </div>
+                <button onclick="closeScoreModal()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition">
+                    <i data-lucide="x" class="w-6 h-6"></i>
+                </button>
+            </div>
+
+            <!-- 常用加分大按鈕區 (1~50) -->
+            <div class="mb-4">
+                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-between">
+                    <span>快速加分 (點擊立即生效)</span>
+                    <span class="text-emerald-400">+1 ~ +50 分</span>
+                </div>
+                <div class="grid grid-cols-4 gap-2.5">
+                    <button onclick="applyScore(1)" class="py-3.5 sm:py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-emerald-900/40 transition">+1</button>
+                    <button onclick="applyScore(2)" class="py-3.5 sm:py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-emerald-900/40 transition">+2</button>
+                    <button onclick="applyScore(3)" class="py-3.5 sm:py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-emerald-900/40 transition">+3</button>
+                    <button onclick="applyScore(5)" class="py-3.5 sm:py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-emerald-900/40 transition">+5</button>
+                    <button onclick="applyScore(10)" class="py-3.5 sm:py-4 rounded-2xl bg-teal-600 hover:bg-teal-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-teal-900/40 transition">+10</button>
+                    <button onclick="applyScore(20)" class="py-3.5 sm:py-4 rounded-2xl bg-teal-600 hover:bg-teal-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-teal-900/40 transition">+20</button>
+                    <button onclick="applyScore(30)" class="py-3.5 sm:py-4 rounded-2xl bg-cyan-600 hover:bg-cyan-500 active:scale-95 text-white font-black text-xl sm:text-2xl shadow-lg shadow-cyan-900/40 transition">+30</button>
+                    <button onclick="applyScore(50)" class="py-3.5 sm:py-4 rounded-2xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-black text-xl sm:text-2xl shadow-lg shadow-amber-900/40 transition">+50</button>
+                </div>
+            </div>
+
+            <!-- 自訂分數輸入框 (支援鍵盤直接輸入數字 + Enter) -->
+            <div class="mb-4 bg-slate-950/70 p-3.5 rounded-2xl border border-slate-800">
+                <label for="custom-score-input" class="block text-xs font-bold text-slate-400 mb-2">自訂分數 (輸入 1~50，可按鍵盤 <kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">Enter</kbd> 確認)</label>
+                <div class="flex gap-2">
+                    <input type="number" id="custom-score-input" min="-50" max="50" placeholder="例如: 15" class="w-full bg-slate-900 border-2 border-slate-700 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-xl font-black text-white outline-none transition" onkeydown="handleCustomScoreKey(event)">
+                    <button onclick="applyCustomScore(1)" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-base whitespace-nowrap transition active:scale-95">加分 (+)</button>
+                    <button onclick="applyCustomScore(-1)" class="px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white font-black text-base whitespace-nowrap transition active:scale-95">扣分 (-)</button>
+                </div>
+                <p id="custom-score-error" class="text-rose-400 text-xs mt-1.5 hidden">請輸入 1 到 50 之間的有效數字！</p>
+            </div>
+
+            <!-- 快速扣分修正區 & 連續輸入設定 -->
+            <div class="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+                <div class="flex items-center gap-1.5">
+                    <span class="text-xs text-slate-400 mr-0.5">誤按修正：</span>
+                    <button onclick="applyScore(-1)" class="px-2.5 py-1.5 rounded-xl bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold text-sm transition active:scale-95">-1</button>
+                    <button onclick="applyScore(-2)" class="px-2.5 py-1.5 rounded-xl bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold text-sm transition active:scale-95">-2</button>
+                    <button onclick="applyScore(-5)" class="px-2.5 py-1.5 rounded-xl bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold text-sm transition active:scale-95">-5</button>
+                    <button onclick="applyScore(-10)" class="px-2.5 py-1.5 rounded-xl bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold text-sm transition active:scale-95">-10</button>
+                </div>
+
+                <!-- 連續操作勾選框 -->
+                <label class="flex items-center gap-2 cursor-pointer text-xs text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700">
+                    <input type="checkbox" id="keep-modal-open" class="rounded text-indigo-500 focus:ring-0 w-4 h-4">
+                    <span>連續給分不關閉視窗</span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. 名單管理 Modal -->
+    <div id="roster-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-3xl max-w-6xl w-full max-h-[90vh] flex flex-col shadow-2xl" onclick="event.stopPropagation()">
+            <div class="p-5 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                    <h3 class="text-xl font-black text-white flex items-center gap-2">
+                        <i data-lucide="users" class="w-5 h-5 text-emerald-400"></i>
+                        班級四組名單管理
+                    </h3>
+                    <p class="text-xs text-slate-400 mt-0.5">可直接從 Excel 貼上每組名單（每行一位學生），系統會盡力保留既有學生的分數。</p>
+                </div>
+                <button onclick="closeRosterModal()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="p-5 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
+                <!-- 第一組名單編輯 -->
+                <div class="bg-slate-950/60 p-4 rounded-2xl border border-blue-500/30 flex flex-col">
+                    <div class="flex items-center justify-between mb-2">
+                        <input type="text" id="edit-group-name-0" class="bg-transparent font-black text-blue-400 text-base border-b border-blue-500/40 focus:border-blue-400 outline-none w-28" value="第一組">
+                        <span id="roster-count-0" class="text-xs text-slate-400">0 人</span>
+                    </div>
+                    <textarea id="roster-textarea-0" rows="10" oninput="updateRosterCounts()" placeholder="請輸入學生姓名，每行一位..." class="w-full flex-1 bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm text-white focus:border-blue-500 outline-none resize-none leading-relaxed"></textarea>
+                </div>
+
+                <!-- 第二組名單編輯 -->
+                <div class="bg-slate-950/60 p-4 rounded-2xl border border-emerald-500/30 flex flex-col">
+                    <div class="flex items-center justify-between mb-2">
+                        <input type="text" id="edit-group-name-1" class="bg-transparent font-black text-emerald-400 text-base border-b border-emerald-500/40 focus:border-emerald-400 outline-none w-28" value="第二組">
+                        <span id="roster-count-1" class="text-xs text-slate-400">0 人</span>
+                    </div>
+                    <textarea id="roster-textarea-1" rows="10" oninput="updateRosterCounts()" placeholder="請輸入學生姓名，每行一位..." class="w-full flex-1 bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm text-white focus:border-emerald-500 outline-none resize-none leading-relaxed"></textarea>
+                </div>
+
+                <!-- 第三組名單編輯 -->
+                <div class="bg-slate-950/60 p-4 rounded-2xl border border-amber-500/30 flex flex-col">
+                    <div class="flex items-center justify-between mb-2">
+                        <input type="text" id="edit-group-name-2" class="bg-transparent font-black text-amber-400 text-base border-b border-amber-500/40 focus:border-amber-400 outline-none w-28" value="第三組">
+                        <span id="roster-count-2" class="text-xs text-slate-400">0 人</span>
+                    </div>
+                    <textarea id="roster-textarea-2" rows="10" oninput="updateRosterCounts()" placeholder="請輸入學生姓名，每行一位..." class="w-full flex-1 bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm text-white focus:border-amber-500 outline-none resize-none leading-relaxed"></textarea>
+                </div>
+
+                <!-- 第四組名單編輯 -->
+                <div class="bg-slate-950/60 p-4 rounded-2xl border border-purple-500/30 flex flex-col">
+                    <div class="flex items-center justify-between mb-2">
+                        <input type="text" id="edit-group-name-3" class="bg-transparent font-black text-purple-400 text-base border-b border-purple-500/40 focus:border-purple-400 outline-none w-28" value="第四組">
+                        <span id="roster-count-3" class="text-xs text-slate-400">0 人</span>
+                    </div>
+                    <textarea id="roster-textarea-3" rows="10" oninput="updateRosterCounts()" placeholder="請輸入學生姓名，每行一位..." class="w-full flex-1 bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm text-white focus:border-purple-500 outline-none resize-none leading-relaxed"></textarea>
+                </div>
+            </div>
+
+            <div class="p-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 rounded-b-3xl">
+                <button onclick="loadDemoRoster()" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+                    載入預設四組名單 (19人)
+                </button>
+                <div class="flex items-center gap-2">
+                    <button onclick="closeRosterModal()" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm">取消</button>
+                    <button onclick="saveRosterChanges()" class="px-6 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm shadow-lg transition">儲存名單設定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. 全班個人排行榜 Modal -->
+    <div id="leaderboard-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-3xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl" onclick="event.stopPropagation()">
+            <div class="p-5 border-b border-slate-800 flex items-center justify-between">
+                <h3 class="text-xl font-black text-white flex items-center gap-2">
+                    <i data-lucide="award" class="w-6 h-6 text-yellow-400"></i>
+                    全班個人積分排行榜
+                </h3>
+                <button onclick="closeLeaderboardModal()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div id="full-leaderboard-list" class="p-5 overflow-y-auto space-y-2 flex-1">
+                <!-- JS 動態生成 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 4. 匯出成績與系統備份 Modal -->
+    <div id="export-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-3xl max-w-2xl w-full p-5 sm:p-6 shadow-2xl" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-xl font-black text-white flex items-center gap-2">
+                    <i data-lucide="file-spreadsheet" class="w-5 h-5 text-indigo-400"></i>
+                    匯出成績報表與 Excel 接續存取
+                </h3>
+                <button onclick="closeExportModal()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <textarea id="export-preview-text" rows="8" readonly class="w-full bg-slate-950 border border-slate-800 rounded-2xl p-3.5 text-xs sm:text-sm font-mono text-slate-200 mb-3 outline-none"></textarea>
+            
+            <!-- Excel 匯入接續計分提示框 -->
+            <div class="bg-emerald-950/40 border border-emerald-500/30 rounded-2xl p-3 mb-4 flex flex-wrap items-center justify-between gap-2">
+                <div class="text-xs text-emerald-200">
+                    <span class="font-black text-emerald-400 block">⚡ 免手動匯入匯出：綁定本機 Excel 自動同步</span>
+                    支援 Chrome / Edge 桌面版直接綁定本機 <code class="bg-slate-900 px-1 rounded">.xlsx</code> 檔，每次加減分自動即時覆寫保存！
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    <button onclick="bindAutoSaveExcelFile(true)" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs shadow-md transition active:scale-95">
+                        <i data-lucide="link" class="w-3.5 h-3.5"></i>
+                        <span>綁定/切換自動存檔 Excel</span>
+                    </button>
+                    <label class="cursor-pointer flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 font-bold text-xs transition active:scale-95">
+                        <i data-lucide="upload" class="w-3.5 h-3.5 text-amber-400"></i>
+                        <span>單次匯入</span>
+                        <input type="file" id="import-excel-input" accept=".xlsx,.xls" class="hidden" onchange="handleImportExcel(event)">
+                    </label>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-2.5">
+                <div class="flex flex-wrap items-center gap-2">
+                    <button onclick="downloadSystemHTML('index.html')" class="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-bold text-xs sm:text-sm transition" title="直接匯出成 GitHub Pages 專用的 index.html 檔案">
+                        <i data-lucide="github" class="w-4 h-4"></i>
+                        <span>下載 GitHub 版 (index.html)</span>
+                    </button>
+                    <button onclick="downloadSystemHTML()" class="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs sm:text-sm transition" title="下載包含目前名單與所有分數紀錄的完整網頁檔">
+                        <i data-lucide="hard-drive-download" class="w-4 h-4 text-sky-400"></i>
+                        <span>備份網頁 (.html)</span>
+                    </button>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <button onclick="copyExportText()" class="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs sm:text-sm transition">
+                        <i data-lucide="copy" class="w-4 h-4 text-sky-400"></i>
+                        <span id="copy-btn-text">複製文字</span>
+                    </button>
+                    <button onclick="downloadCSV()" class="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs sm:text-sm transition">
+                        <i data-lucide="file-text" class="w-4 h-4"></i>
+                        <span>下載 CSV</span>
+                    </button>
+                    <button onclick="downloadExcel()" class="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm shadow-lg shadow-emerald-900/40 transition active:scale-95">
+                        <i data-lucide="file-spreadsheet" class="w-4 h-4"></i>
+                        <span>匯出 Excel (.xlsx)</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. 授權 Email 登入與白名單管理 Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-slate-900 border-2 border-slate-700 rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl" onclick="event.stopPropagation()">
+            <div class="flex items-start justify-between gap-3 mb-4">
+                <div>
+                    <span id="auth-modal-badge" class="inline-block text-xs font-bold px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 mb-1.5">權限驗證</span>
+                    <h3 class="text-xl sm:text-2xl font-black text-white">管理員 Email 登入</h3>
+                    <p class="text-xs text-slate-400 mt-1">僅授權白名單內的 Email 可執行加減分與名單修改，其餘人員皆為唯讀檢視。</p>
+                </div>
+                <button onclick="closeAuthModal()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- 未登入狀態：顯示登入表單 -->
+            <div id="auth-login-section">
+                <div class="mb-4">
+                    <label for="login-email-input" class="block text-xs font-bold text-slate-300 mb-1.5">請輸入您的授權 Email 帳號</label>
+                    <div class="relative">
+                        <input type="email" id="login-email-input" placeholder="例如：teacher@school.edu.tw" class="w-full bg-slate-950 border-2 border-slate-700 focus:border-indigo-500 rounded-xl px-4 py-3 text-sm font-bold text-white outline-none transition" onkeydown="if(event.key==='Enter') handleEmailLogin()">
+                    </div>
+                    <p id="auth-error-msg" class="text-rose-400 text-xs mt-2 hidden flex items-center gap-1">
+                        <i data-lucide="alert-circle" class="w-3.5 h-3.5 shrink-0"></i>
+                        <span>此 Email 不在授權名單中，僅具備「唯讀檢視」權限！</span>
+                    </p>
+                </div>
+
+                <button onclick="handleEmailLogin()" class="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-sm shadow-lg shadow-indigo-600/30 transition active:scale-95 flex items-center justify-center gap-2">
+                    <i data-lucide="log-in" class="w-4 h-4"></i>
+                    <span>驗證並登入計分權限</span>
+                </button>
+            </div>
+
+            <!-- 已登入狀態：顯示目前登入者與授權白名單設定 -->
+            <div id="auth-manage-section" class="hidden">
+                <div class="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-3.5 mb-4 flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                        <span class="text-[11px] text-emerald-400 font-bold block">已取得計分操作權限</span>
+                        <span id="logged-in-email-display" class="text-sm font-black text-white truncate block"></span>
+                    </div>
+                    <button onclick="handleLogout()" class="px-3 py-1.5 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-bold text-xs shrink-0 transition active:scale-95">
+                        登出 (切回唯讀)
+                    </button>
+                </div>
+
+                <div class="mb-4">
+                    <label for="authorized-emails-textarea" class="block text-xs font-bold text-slate-300 mb-1.5">
+                        授權可加減分的 Email 白名單（每行一個 Email）：
+                    </label>
+                    <textarea id="authorized-emails-textarea" rows="4" class="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-xl p-3 text-xs sm:text-sm font-mono text-slate-200 outline-none resize-none leading-relaxed" placeholder="teacher@school.edu.tw&#10;helper@school.edu.tw"></textarea>
+                    <p class="text-[11px] text-slate-400 mt-1">※ 儲存後，若將設定備份為 HTML 檔，此白名單也會一併寫入檔案中。</p>
+                </div>
+
+                <div class="flex justify-end gap-2">
+                    <button onclick="closeAuthModal()" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs sm:text-sm">取消</button>
+                    <button onclick="saveAuthorizedEmails()" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm shadow-lg transition active:scale-95">儲存白名單設定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 訊息提示框 -->
+    <div id="toast-container" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none flex flex-col items-center gap-2"></div>
+
+    <script type="module">
+        // ==================== 雲端即時同步模組 (Firebase Firestore) ====================
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        function downloadSystemHTML(customFileName) {
+            const currentHTML = document.documentElement.outerHTML;
+            const serializedState = JSON.stringify(appState, null, 12);
+            const updatedHTML = '<!DOCTYPE html>\n' + currentHTML.replace(
+                /const DEFAULT_STATE = \{[\s\S]*?\n        \};/,
+                `const DEFAULT_STATE = ${serializedState};`
+            );
+
+            const blob = new Blob([updatedHTML], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = customFileName || `classroom_score_tracker_${new Date().toISOString().slice(0, 10)}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast(
+                customFileName === 'index.html'
+                    ? '已下載 GitHub 專用首頁檔 index.html，可直接拖曳上傳至 GitHub！'
+                    : '已下載包含最新名單、分數與授權白名單的完整系統網頁！',
+                'success'
+            );
+        }
+                const firebaseConfig = typeof __firebase_config === 'string'
+                    ? JSON.parse(__firebase_config)
+                    : __firebase_config;
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                const db = getFirestore(app);
+
+                // 依據規則：必須先完成驗證才能進行任何 Firestore 讀寫
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                if (!auth.currentUser) {
+                    updateCloudStatusBadge('local');
+                    return;
+                }
+
+                // 依據規則：使用嚴格指定的公開資料路徑 /artifacts/{appId}/public/data/{collectionName}/{docId}
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'classroom_scores', 'live_board');
+
+                window.CloudSync.enabled = true;
+                window.CloudSync.db = db;
+                window.CloudSync.auth = auth;
+                window.CloudSync.user = auth.currentUser;
+                window.CloudSync.docRef = docRef;
+
+                // 檢查雲端是否已有資料，若無則初始化寫入
+                const snap = await getDoc(docRef);
+                if (!snap.exists() && window.getAppStateSnapshot) {
+                    await setDoc(docRef, {
+                        stateJson: JSON.stringify(window.getAppStateSnapshot()),
+                        updatedAt: Date.now(),
+                        updatedBy: 'system_init'
+                    });
+                }
+
+                // 啟動即時監聽 (onSnapshot)，當 Admin 修改分數時，所有在線人員即時同步畫面
+                window.CloudSync.unsubscribe = onSnapshot(
+                    docRef,
+                    (docSnap) => {
+                        window.CloudSync.connected = true;
+                        updateCloudStatusBadge('live');
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data && data.stateJson && window.applyRemoteCloudState) {
+                                window.applyRemoteCloudState(data.stateJson, data.updatedBy);
+                            }
+                        }
+                    },
+                    (error) => {
+                        console.error('雲端即時連線中斷或權限錯誤:', error);
+                        window.CloudSync.connected = false;
+                        updateCloudStatusBadge('error');
+                    }
+                );
+            } catch (err) {
+                console.warn('雲端同步未啟用，切換為本機模式:', err);
+                updateCloudStatusBadge('local');
+            }
+        }
+
+        window.pushStateToCloud = async function(stateObj, operatorEmail) {
+            if (!window.CloudSync.enabled || !window.CloudSync.user || !window.CloudSync.docRef) return;
+            if (window.CloudSync.isApplyingRemote) return;
+            try {
+                await setDoc(window.CloudSync.docRef, {
+                    stateJson: JSON.stringify(stateObj),
+                    updatedAt: Date.now(),
+                    updatedBy: operatorEmail || 'admin'
+                });
+            } catch (err) {
+                console.error('推送分數至雲端失敗:', err);
+                if (window.showToast) {
+                    window.showToast('雲端同步寫入失敗，請檢查網路連線', 'error');
+                }
+            }
+        };
+
+        function updateCloudStatusBadge(status) {
+            const headerSubtitle = document.getElementById('header-subtitle');
+            if (!headerSubtitle) return;
+            let badge = document.getElementById('cloud-live-pill');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.id = 'cloud-live-pill';
+                badge.className = 'inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-full text-[11px] font-bold align-middle';
+                headerSubtitle.appendChild(badge);
+            }
+            if (status === 'live') {
+                badge.className = 'inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+                badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span> 雲端即時同步中';
+            } else if (status === 'error') {
+                badge.className = 'inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40';
+                badge.innerHTML = '● 雲端連線異常';
+            } else {
+                badge.className = 'inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-400 border border-slate-700';
+                badge.innerHTML = '● 本機單機模式';
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            setTimeout(initCloudSync, 150);
+        });
+    </script>
+
+    <script>
+        // ==================== 狀態與資料結構 ====================
+        const STORAGE_KEY = 'classroom_4groups_score_system_v3';
+        const AUTH_SESSION_KEY = 'classroom_score_logged_in_email_v1';
+
+        // 預設授權可進行加減分的 Email 白名單（您可在介面中登入後自由增減）
+        const DEFAULT_AUTHORIZED_EMAILS = [
+            'teacher@school.edu.tw',
+            'admin@gmail.com'
+        ];
+
+        // 四組代表色設定（藍、綠、琥珀橘、紫）
+        const GROUP_THEMES = [
+            {
+                border: 'border-blue-500/40',
+                headerBg: 'bg-gradient-to-br from-blue-950/90 via-slate-900 to-slate-900',
+                accentText: 'text-blue-400',
+                btnBg: 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/40',
+                cardHover: 'hover:border-blue-400/70 hover:bg-slate-800/90'
+            },
+            {
+                border: 'border-emerald-500/40',
+                headerBg: 'bg-gradient-to-br from-emerald-950/90 via-slate-900 to-slate-900',
+                accentText: 'text-emerald-400',
+                btnBg: 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/40',
+                cardHover: 'hover:border-emerald-400/70 hover:bg-slate-800/90'
+            },
+            {
+                border: 'border-amber-500/40',
+                headerBg: 'bg-gradient-to-br from-amber-950/90 via-slate-900 to-slate-900',
+                accentText: 'text-amber-400',
+                btnBg: 'bg-amber-600 hover:bg-amber-500 shadow-amber-900/40',
+                cardHover: 'hover:border-amber-400/70 hover:bg-slate-800/90'
+            },
+            {
+                border: 'border-purple-500/40',
+                headerBg: 'bg-gradient-to-br from-purple-950/90 via-slate-900 to-slate-900',
+                accentText: 'text-purple-400',
+                btnBg: 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/40',
+                cardHover: 'hover:border-purple-400/70 hover:bg-slate-800/90'
+            }
+        ];
+
+        // 預設班級資料（依照您指定的四組名單，初始皆為 0 分）
+        const DEFAULT_STATE = {
+            groups: [
+                {
+                    id: 1,
+                    name: '第一組',
+                    students: [
+                        { id: 's1', name: '孫麗庭', score: 0 },
+                        { id: 's2', name: '林佳貞', score: 0 },
+                        { id: 's3', name: '張祐誠', score: 0 },
+                        { id: 's4', name: '陳王彗玫', score: 0 },
+                        { id: 's5', name: '范昱瑄', score: 0 }
+                    ]
+                },
+                {
+                    id: 2,
+                    name: '第二組',
+                    students: [
+                        { id: 's6', name: '李依鈴', score: 0 },
+                        { id: 's7', name: '曾湘畇', score: 0 },
+                        { id: 's8', name: '陳羿璇', score: 0 },
+                        { id: 's9', name: '陳怡萍', score: 0 },
+                        { id: 's10', name: '楊雨璇', score: 0 }
+                    ]
+                },
+                {
+                    id: 3,
+                    name: '第三組',
+                    students: [
+                        { id: 's11', name: '周書涵', score: 0 },
+                        { id: 's12', name: '吳筱筠', score: 0 },
+                        { id: 's13', name: '鄭世裕', score: 0 },
+                        { id: 's14', name: '吳燕鈴', score: 0 }
+                    ]
+                },
+                {
+                    id: 4,
+                    name: '第四組',
+                    students: [
+                        { id: 's15', name: '殷銘', score: 0 },
+                        { id: 's16', name: '陳淑民', score: 0 },
+                        { id: 's17', name: '劉家多', score: 0 },
+                        { id: 's18', name: '許瑜珍', score: 0 },
+                        { id: 's19', name: '林佩宜', score: 0 }
+                    ]
+                }
+            ],
+            logs: [], // 操作歷史紀錄，支援 Undo
+            authorizedEmails: [...DEFAULT_AUTHORIZED_EMAILS] // 授權白名單
+        };
+
+        let appState = null;
+        let currentUserEmail = null; // 目前登入的 Email
+        let isMultiSelectMode = false;
+        let selectedStudentIds = new Set();
+
+        // File System Access API 自動寫入 Excel 相關狀態 (透過 IndexedDB 記憶檔案控制代碼)
+        const IDB_NAME = 'ClassroomScoreExcelSyncDB';
+        const IDB_STORE = 'fileHandles';
+        const IDB_KEY = 'boundExcelHandle';
+        let boundExcelHandle = null;      // 已授權可直接讀寫的檔案控制代碼
+        let cachedExcelHandle = null;     // 從 IndexedDB 讀取到、等待點擊確認授權的上次檔案控制代碼
+        let excelSyncStatus = 'unbound';  // 'unbound' | 'pending_permission' | 'synced' | 'syncing' | 'error'
+        let isWritingExcel = false;
+        let pendingExcelWrite = false;
+
+        // 偵測是否處於受限制的跨網域 iframe 預覽環境（瀏覽器會禁止 showSaveFilePicker）
+        function canUseNativeFilePicker() {
+            if (!('showSaveFilePicker' in window)) return false;
+            try {
+                return window.self === window.top;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // 當前加減分目標設定
+        // type: 'student' | 'group' | 'multi'
+        let currentModalTarget = null;
+
+        // ==================== IndexedDB 儲存/讀取 Excel 檔案控制代碼 ====================
+        function openExcelHandleDB() {
+            return new Promise((resolve, reject) => {
+                if (!('indexedDB' in window)) {
+                    reject(new Error('瀏覽器不支援 IndexedDB'));
+                    return;
+                }
+                const request = indexedDB.open(IDB_NAME, 1);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(IDB_STORE)) {
+                        db.createObjectStore(IDB_STORE);
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function saveExcelHandleToIDB(handle) {
+            try {
+                const db = await openExcelHandleDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(IDB_STORE, 'readwrite');
+                    const store = tx.objectStore(IDB_STORE);
+                    const req = store.put(handle, IDB_KEY);
+                    req.onsuccess = () => resolve(true);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) {
+                console.warn('無法將檔案控制代碼存入 IndexedDB:', e);
+                return false;
+            }
+        }
+
+        async function loadExcelHandleFromIDB() {
+            try {
+                const db = await openExcelHandleDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(IDB_STORE, 'readonly');
+                    const store = tx.objectStore(IDB_STORE);
+                    const req = store.get(IDB_KEY);
+                    req.onsuccess = () => resolve(req.result || null);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function updateExcelSyncUI() {
+            const btn = document.getElementById('btn-excel-sync');
+            const icon = document.getElementById('excel-sync-icon');
+            const text = document.getElementById('excel-sync-text');
+            if (!btn || !icon || !text) return;
+
+            if (!canUseNativeFilePicker()) {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-bold text-xs sm:text-sm transition active:scale-95';
+                btn.title = '目前為預覽視窗模式（已自動本機存檔），點擊可直接下載最新 Excel；下載本網頁獨立開啟後可啟用全自動即時覆寫';
+                icon.className = 'w-4 h-4 text-emerald-400';
+                text.textContent = '已自動記憶 (點此下載 Excel)';
+                return;
+            }
+
+            if (excelSyncStatus === 'synced' && boundExcelHandle) {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-xs sm:text-sm transition active:scale-95';
+                btn.title = `已綁定：${boundExcelHandle.name}（每次加減分自動即時覆寫，點擊可更換檔案）`;
+                icon.className = 'w-4 h-4 text-emerald-400';
+                text.textContent = `自動存檔：${boundExcelHandle.name}`;
+            } else if (excelSyncStatus === 'syncing' && boundExcelHandle) {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-500/40 font-bold text-xs sm:text-sm transition';
+                icon.className = 'w-4 h-4 text-sky-400 animate-spin';
+                text.textContent = '正在寫入 Excel...';
+            } else if (excelSyncStatus === 'pending_permission' && cachedExcelHandle) {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/25 hover:bg-amber-500/35 text-amber-300 border border-amber-400 font-black text-xs sm:text-sm transition active:scale-95 animate-pulse';
+                btn.title = '點擊允許瀏覽器權限，即可自動讀取並延用上次的 Excel 檔案';
+                icon.className = 'w-4 h-4 text-amber-300';
+                text.textContent = `延用上次：${cachedExcelHandle.name}`;
+            } else if (excelSyncStatus === 'error') {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 font-bold text-xs sm:text-sm transition active:scale-95';
+                btn.title = '寫入失敗（請確認電腦上的 Excel 視窗是否已關閉），點擊重新綁定';
+                icon.className = 'w-4 h-4 text-rose-400';
+                text.textContent = 'Excel 寫入受阻 (點此重試)';
+            } else {
+                btn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold text-xs sm:text-sm transition active:scale-95';
+                btn.title = '綁定本機 Excel 檔案後，每次加減分將自動即時寫入';
+                icon.className = 'w-4 h-4 text-slate-400';
+                text.textContent = '綁定自動存檔 Excel';
+            }
+            if (window.lucide) lucide.createIcons();
+        }
+
+        async function restoreBoundExcelHandleFromIDB() {
+            updateExcelSyncUI();
+            if (!canUseNativeFilePicker()) return;
+            const handle = await loadExcelHandleFromIDB();
+            if (!handle) return;
+
+            try {
+                const perm = await handle.queryPermission({ mode: 'readwrite' });
+                if (perm === 'granted') {
+                    boundExcelHandle = handle;
+                    excelSyncStatus = 'synced';
+                    updateExcelSyncUI();
+                    await readAndLoadFromExcelHandle(handle, true);
+                } else {
+                    cachedExcelHandle = handle;
+                    excelSyncStatus = 'pending_permission';
+                    updateExcelSyncUI();
+                }
+            } catch (e) {
+                console.warn('查詢 Excel 檔案權限失敗:', e);
+            }
+        }
+
+        async function handleExcelSyncClick() {
+            if (!canUseNativeFilePicker()) {
+                downloadExcel();
+                showToast('預覽視窗受瀏覽器安全限制無法直接覆寫本機檔案，已為您直接下載最新 Excel！若將本網頁下載後獨立開啟，即可啟用免下載全自動覆寫。', 'info');
+                return;
+            }
+
+            if (excelSyncStatus === 'pending_permission' && cachedExcelHandle) {
+                try {
+                    const perm = await cachedExcelHandle.requestPermission({ mode: 'readwrite' });
+                    if (perm === 'granted') {
+                        boundExcelHandle = cachedExcelHandle;
+                        cachedExcelHandle = null;
+                        excelSyncStatus = 'synced';
+                        updateExcelSyncUI();
+                        const loaded = await readAndLoadFromExcelHandle(boundExcelHandle, false);
+                        if (!loaded) {
+                            await autoWriteToBoundExcel();
+                            showToast(`已成功連結並初始化：${boundExcelHandle.name}`, 'success');
+                        }
+                        return;
+                    }
+                } catch (e) {
+                    console.warn('請求檔案權限失敗:', e);
+                }
+            }
+
+            await bindAutoSaveExcelFile(false);
+        }
+
+        async function bindAutoSaveExcelFile(fromModal) {
+            if (!canUseNativeFilePicker()) {
+                if (fromModal) closeExportModal();
+                downloadExcel();
+                showToast('線上預覽視窗受瀏覽器安全限制，已改為直接下載最新 Excel；請先點「備份網頁 (.html)」並在電腦雙擊開啟，即可使用免下載全自動覆寫！', 'warning');
+                return;
+            }
+
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: '班級分組積分自動存檔.xlsx',
+                    types: [{
+                        description: 'Excel 活頁簿 (*.xlsx)',
+                        accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] }
+                    }]
+                });
+
+                boundExcelHandle = handle;
+                cachedExcelHandle = null;
+                await saveExcelHandleToIDB(handle);
+                excelSyncStatus = 'synced';
+                updateExcelSyncUI();
+
+                if (fromModal) closeExportModal();
+
+                // 若選擇的是既有的 Excel 檔且有內容，嘗試讀取延用；否則立即將目前狀態寫入該檔
+                const loaded = await readAndLoadFromExcelHandle(handle, false);
+                if (!loaded) {
+                    await autoWriteToBoundExcel();
+                    showToast(`已綁定「${handle.name}」，之後每次加減分將自動即時存入！`, 'success');
+                }
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    console.error('綁定 Excel 失敗:', err);
+                    showToast('綁定失敗：' + err.message, 'error');
+                }
+            }
+        }
+
+        async function readAndLoadFromExcelHandle(handle, silent) {
+            try {
+                const file = await handle.getFile();
+                if (!file || file.size === 0) return false;
+                const data = await file.arrayBuffer();
+                const wb = XLSX.read(data, { type: 'array' });
+                const restored = applyWorkbookState(wb, silent);
+                return restored;
+            } catch (e) {
+                console.warn('讀取既有 Excel 檔時略過（可能為新建空白檔）:', e);
+                return false;
+            }
+        }
+
+        async function autoWriteToBoundExcel() {
+            if (!boundExcelHandle || !canUseNativeFilePicker()) return;
+            if (isWritingExcel) {
+                pendingExcelWrite = true;
+                return;
+            }
+
+            isWritingExcel = true;
+            excelSyncStatus = 'syncing';
+            updateExcelSyncUI();
+
+            try {
+                const wb = buildExcelWorkbook();
+                if (!wb) throw new Error('Excel 模組尚未載入');
+                const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+                const writable = await boundExcelHandle.createWritable();
+                await writable.write(wbout);
+                await writable.close();
+
+                excelSyncStatus = 'synced';
+                updateExcelSyncUI();
+            } catch (err) {
+                console.error('自動寫入 Excel 失敗:', err);
+                excelSyncStatus = 'error';
+                updateExcelSyncUI();
+                showToast('自動寫入 Excel 失敗（請確認電腦上的 Excel 程式是否正開啟該檔案）', 'error');
+            } finally {
+                isWritingExcel = false;
+                if (pendingExcelWrite) {
+                    pendingExcelWrite = false;
+                    setTimeout(() => autoWriteToBoundExcel(), 150);
+                }
+            }
+        }
+
+        // ==================== 初始化與資料存取 ====================
+        function initApp() {
+            // 載入系統狀態
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                try {
+                    appState = JSON.parse(saved);
+                    if (!appState || !Array.isArray(appState.groups) || appState.groups.length !== 4) {
+                        appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+                    }
+                    if (!Array.isArray(appState.logs)) appState.logs = [];
+                    if (!Array.isArray(appState.authorizedEmails) || appState.authorizedEmails.length === 0) {
+                        appState.authorizedEmails = [...DEFAULT_AUTHORIZED_EMAILS];
+                    }
+                } catch (e) {
+                    appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+                }
+            } else {
+                appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+                saveState(true);
+            }
+
+            // 檢查目前瀏覽器工作階段是否有已驗證的授權 Email
+            const sessionEmail = sessionStorage.getItem(AUTH_SESSION_KEY);
+            if (sessionEmail && isEmailAuthorized(sessionEmail)) {
+                currentUserEmail = sessionEmail.trim().toLowerCase();
+            } else {
+                currentUserEmail = null;
+                sessionStorage.removeItem(AUTH_SESSION_KEY);
+            }
+
+            updateAuthUI();
+            renderAll();
+            restoreBoundExcelHandleFromIDB();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        // 提供雲端同步模組取得最新狀態與套用遠端即時更新
+        window.getAppStateSnapshot = function() {
+            return appState;
+        };
+
+        window.applyRemoteCloudState = function(stateJsonStr, updatedBy) {
+            try {
+                const remoteState = JSON.parse(stateJsonStr);
+                if (!remoteState || !Array.isArray(remoteState.groups) || remoteState.groups.length !== 4) return;
+
+                const currentJson = JSON.stringify(appState);
+                if (currentJson === stateJsonStr) return; // 資料相同無需重複渲染
+
+                if (window.CloudSync) window.CloudSync.isApplyingRemote = true;
+
+                // 紀錄舊分數以便觸發即時跳動動畫
+                const oldScores = new Map();
+                appState.groups.forEach(g => g.students.forEach(s => oldScores.set(s.id, Number(s.score) || 0)));
+
+                appState.groups = remoteState.groups;
+                appState.logs = Array.isArray(remoteState.logs) ? remoteState.logs : [];
+                if (Array.isArray(remoteState.authorizedEmails) && remoteState.authorizedEmails.length > 0) {
+                    appState.authorizedEmails = remoteState.authorizedEmails;
+                }
+
+                // 同步更新本機快取與自動寫入 Excel（若本機有綁定）
+                try {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+                } catch (e) {}
+                if (boundExcelHandle && canUseNativeFilePicker()) {
+                    autoWriteToBoundExcel();
+                }
+
+                updateAuthUI();
+                renderAll();
+
+                // 針對分數有變動的學生播放即時跳動與浮動提示動畫（讓所有檢視者都有感）
+                appState.groups.forEach(g => {
+                    g.students.forEach(s => {
+                        const prev = oldScores.get(s.id);
+                        const curr = Number(s.score) || 0;
+                        if (prev !== undefined && prev !== curr) {
+                            const delta = curr - prev;
+                            const scoreEl = document.getElementById(`student-score-${s.id}`);
+                            const cardEl = document.getElementById(`student-card-${s.id}`);
+                            if (scoreEl) {
+                                scoreEl.classList.remove('animate-score-pop');
+                                void scoreEl.offsetWidth;
+                                scoreEl.classList.add('animate-score-pop');
+                            }
+                            if (cardEl) {
+                                const badge = document.createElement('span');
+                                badge.className = `floating-badge right-3 top-1 font-black text-base ${delta >= 0 ? 'text-emerald-300' : 'text-rose-400'}`;
+                                badge.textContent = delta >= 0 ? `+${delta}` : `${delta}`;
+                                cardEl.appendChild(badge);
+                                setTimeout(() => badge.remove(), 850);
+                            }
+                        }
+                    });
+                });
+            } catch (err) {
+                console.warn('套用雲端即時資料失敗:', err);
+            } finally {
+                if (window.CloudSync) window.CloudSync.isApplyingRemote = false;
+            }
+        };
+
+        function saveState(skipExcelSync = false) {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+            } catch (e) {
+                console.warn('localStorage 儲存失敗:', e);
+            }
+            if (!skipExcelSync && boundExcelHandle && canUseNativeFilePicker()) {
+                autoWriteToBoundExcel();
+            }
+            // 若雲端即時同步已啟用且為授權管理員操作，即時廣播推送給所有在線檢視者
+            if (window.pushStateToCloud && isAuthorizedUser()) {
+                window.pushStateToCloud(appState, currentUserEmail);
+            }
+        }
+
+        // ==================== 計算輔助函式 ====================
+        function getGroupTotal(group) {
+            return group.students.reduce((sum, s) => sum + (Number(s.score) || 0), 0);
+        }
+
+        function getGroupAverage(group) {
+            if (!group.students || group.students.length === 0) return '0.0';
+            return (getGroupTotal(group) / group.students.length).toFixed(1);
+        }
+
+        function getAllStudentsWithGroup() {
+            const list = [];
+            appState.groups.forEach((g, gIdx) => {
+                g.students.forEach(s => {
+                    list.push({
+                        ...s,
+                        groupId: g.id,
+                        groupName: g.name,
+                        groupIndex: gIdx
+                    });
+                });
+            });
+            return list;
+        }
+
+        // ==================== 渲染畫面 ====================
+        function renderAll() {
+            renderGroups();
+            renderTop3();
+            renderLogs();
+            updateUndoButton();
+            updateMultiSelectUI();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function renderGroups() {
+            const container = document.getElementById('groups-container');
+            if (!container) return;
+
+            // 計算四組名次（同分並列）
+            const totals = appState.groups.map(g => getGroupTotal(g));
+            const sortedUniqueTotals = [...new Set(totals)].sort((a, b) => b - a);
+            const editable = isAuthorizedUser();
+
+            container.innerHTML = appState.groups.map((group, idx) => {
+                const theme = GROUP_THEMES[idx % GROUP_THEMES.length];
+                const total = getGroupTotal(group);
+                const avg = getGroupAverage(group);
+                const rank = total > 0 ? sortedUniqueTotals.indexOf(total) + 1 : 0;
+
+                let rankBadge = '';
+                if (rank === 1) {
+                    rankBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-400/20 text-yellow-300 border border-yellow-400/40 text-xs font-black"><i data-lucide="crown" class="w-3.5 h-3.5"></i>第 1 名</span>`;
+                } else if (rank === 2) {
+                    rankBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-300/20 text-slate-200 border border-slate-300/40 text-xs font-bold">第 2 名</span>`;
+                } else if (rank === 3) {
+                    rankBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-700/30 text-amber-300 border border-amber-600/40 text-xs font-bold">第 3 名</span>`;
+                }
+
+                const groupScoreBtn = editable
+                    ? `<button onclick="openScoreModalForGroup(${idx})" class="w-full mt-3 py-2.5 px-3 rounded-xl ${theme.btnBg} text-white font-black text-sm shadow-lg transition active:scale-95 flex items-center justify-center gap-1.5">
+                           <i data-lucide="zap" class="w-4 h-4"></i>
+                           <span>整組加減分</span>
+                       </button>`
+                    : `<div class="w-full mt-3 py-2 px-3 rounded-xl bg-slate-800/60 text-slate-400 text-xs font-semibold text-center border border-slate-700/60">
+                           組員共 ${group.students.length} 人 • 唯讀檢視
+                       </div>`;
+
+                const studentsHTML = group.students.map(student => {
+                    const isSelected = selectedStudentIds.has(student.id);
+                    const selectedStyle = isMultiSelectMode && isSelected
+                        ? 'border-amber-400 bg-amber-500/20 ring-2 ring-amber-400/50'
+                        : `border-slate-800 bg-slate-900/80 ${editable ? theme.cardHover + ' cursor-pointer active:scale-[0.98]' : 'cursor-default'}`;
+
+                    const checkIcon = isMultiSelectMode
+                        ? `<div class="w-5 h-5 rounded-md border flex items-center justify-center mr-2 shrink-0 ${isSelected ? 'bg-amber-400 border-amber-400 text-slate-950' : 'border-slate-600 bg-slate-800'}">
+                               ${isSelected ? '<i data-lucide="check" class="w-3.5 h-3.5 stroke-[3]"></i>' : ''}
+                           </div>`
+                        : '';
+
+                    return `
+                        <div id="student-card-${student.id}" onclick="handleStudentClick('${student.id}')" class="relative flex items-center justify-between p-3 rounded-xl border ${selectedStyle} transition select-none">
+                            <div class="flex items-center min-w-0">
+                                ${checkIcon}
+                                <span class="font-bold text-slate-100 text-base truncate">${escapeHTML(student.name)}</span>
+                            </div>
+                            <div class="flex items-center gap-1.5 shrink-0">
+                                <span id="student-score-${student.id}" class="text-lg font-black tabular-nums ${student.score > 0 ? 'text-yellow-300' : student.score < 0 ? 'text-rose-400' : 'text-slate-400'}">
+                                    ${student.score}
+                                </span>
+                                <span class="text-xs text-slate-500 font-semibold">分</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <section class="bg-slate-900/95 border-2 ${theme.border} rounded-3xl overflow-hidden shadow-xl flex flex-col">
+                        <div class="${theme.headerBg} p-4 border-b border-slate-800/80">
+                            <div class="flex items-center justify-between gap-2 mb-1">
+                                <h2 class="text-xl font-black ${theme.accentText} tracking-tight">${escapeHTML(group.name)}</h2>
+                                ${rankBadge}
+                            </div>
+                            <div class="flex items-baseline justify-between mt-2">
+                                <div>
+                                    <span class="text-xs text-slate-400 block">全組總分</span>
+                                    <span class="text-3xl sm:text-4xl font-black text-white tabular-nums tracking-tight">${total}</span>
+                                    <span class="text-xs text-slate-400 ml-1">分</span>
+                                </div>
+                                <div class="text-right">
+                                    <span class="text-xs text-slate-400 block">組平均</span>
+                                    <span class="text-base font-bold text-slate-200 tabular-nums">${avg}</span>
+                                    <span class="text-xs text-slate-500">分/人</span>
+                                </div>
+                            </div>
+                            ${groupScoreBtn}
+                        </div>
+                        <div class="p-3 space-y-2 flex-1">
+                            ${studentsHTML || '<div class="text-center text-slate-500 text-xs py-6">尚無學生名單</div>'}
+                        </div>
+                    </section>
+                `;
+            }).join('');
+        }
+
+        function renderTop3() {
+            const container = document.getElementById('top3-list');
+            if (!container) return;
+
+            const all = getAllStudentsWithGroup().sort((a, b) => b.score - a.score);
+            const top3 = all.slice(0, 3);
+            const medals = ['🥇', '🥈', '🥉'];
+
+            if (top3.length === 0) {
+                container.innerHTML = '<p class="text-xs text-slate-500 text-center py-3">尚無學生資料</p>';
+                return;
+            }
+
+            container.innerHTML = top3.map((s, i) => `
+                <div class="flex items-center justify-between bg-slate-950/70 border border-slate-800/90 rounded-xl px-3 py-2">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="text-base">${medals[i]}</span>
+                        <span class="font-bold text-slate-100 text-sm truncate">${escapeHTML(s.name)}</span>
+                        <span class="text-[11px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded shrink-0">${escapeHTML(s.groupName)}</span>
+                    </div>
+                    <span class="font-black text-yellow-300 text-sm tabular-nums shrink-0">${s.score} 分</span>
+                </div>
+            `).join('');
+        }
+
+        function renderLogs() {
+            const container = document.getElementById('history-log-list');
+            const countEl = document.getElementById('log-count');
+            if (!container || !countEl) return;
+
+            countEl.textContent = `${appState.logs.length} 筆`;
+
+            if (appState.logs.length === 0) {
+                container.innerHTML = `
+                    <div class="h-full flex flex-col items-center justify-center text-slate-500 text-xs py-10">
+                        <i data-lucide="clipboard-list" class="w-8 h-8 mb-2 opacity-40"></i>
+                        <p>尚無加減分紀錄</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = appState.logs.map(log => {
+                const isPositive = log.delta >= 0;
+                const badgeColor = isPositive
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                    : 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+                const deltaText = isPositive ? `+${log.delta}` : `${log.delta}`;
+
+                return `
+                    <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-2.5 text-xs flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                            <div class="font-bold text-slate-200 truncate">${escapeHTML(log.label)}</div>
+                            <div class="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5">
+                                <span>${escapeHTML(log.time)}</span>
+                                ${log.operator ? `<span>• ${escapeHTML(log.operator.split('@')[0])}</span>` : ''}
+                            </div>
+                        </div>
+                        <span class="px-2 py-0.5 rounded-lg border font-black tabular-nums shrink-0 ${badgeColor}">${deltaText}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateUndoButton() {
+            const btn = document.getElementById('btn-undo');
+            if (!btn) return;
+            btn.disabled = appState.logs.length === 0;
+        }
+
+        // ==================== 多選學生模式 ====================
+        function toggleMultiSelect() {
+            if (!isAuthorizedUser()) {
+                showToast('唯讀檢視模式無法操作，請先登入授權帳號！', 'warning');
+                return;
+            }
+            isMultiSelectMode = !isMultiSelectMode;
+            if (!isMultiSelectMode) {
+                selectedStudentIds.clear();
+            }
+            updateMultiSelectUI();
+            renderGroups();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function clearSelection() {
+            selectedStudentIds.clear();
+            updateMultiSelectUI();
+            renderGroups();
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function updateMultiSelectUI() {
+            const bar = document.getElementById('multi-select-bar');
+            const badge = document.getElementById('multi-select-badge');
+            const countEl = document.getElementById('selected-count');
+            const scoreBtn = document.getElementById('btn-score-selected');
+            const toggleBtn = document.getElementById('btn-toggle-multi');
+
+            if (!bar || !badge || !countEl || !scoreBtn || !toggleBtn) return;
+
+            if (isMultiSelectMode && isAuthorizedUser()) {
+                bar.classList.remove('hidden');
+                badge.classList.remove('hidden');
+                toggleBtn.classList.add('bg-amber-500/20', 'border-amber-400', 'text-amber-300');
+                countEl.textContent = selectedStudentIds.size;
+                scoreBtn.disabled = selectedStudentIds.size === 0;
+            } else {
+                bar.classList.add('hidden');
+                badge.classList.add('hidden');
+                toggleBtn.classList.remove('bg-amber-500/20', 'border-amber-400', 'text-amber-300');
+            }
+        }
+
+        // ==================== 點擊學生卡片與加減分邏輯 ====================
+        function handleStudentClick(studentId) {
+            if (!isAuthorizedUser()) {
+                showToast('目前為唯讀檢視模式，需先點擊右上角「管理員登入」才可加減分！', 'info');
+                return;
+            }
+
+            if (isMultiSelectMode) {
+                if (selectedStudentIds.has(studentId)) {
+                    selectedStudentIds.delete(studentId);
+                } else {
+                    selectedStudentIds.add(studentId);
+                }
+                updateMultiSelectUI();
+                renderGroups();
+                if (window.lucide) lucide.createIcons();
+                return;
+            }
+
+            openScoreModalForStudent(studentId);
+        }
+
+        function openScoreModalForStudent(studentId) {
+            if (!isAuthorizedUser()) return;
+            const all = getAllStudentsWithGroup();
+            const student = all.find(s => s.id === studentId);
+            if (!student) return;
+
+            currentModalTarget = { type: 'student', studentIds: [studentId] };
+            document.getElementById('modal-target-badge').textContent = `${student.groupName} • 單人計分`;
+            document.getElementById('modal-target-title').textContent = student.name;
+            document.getElementById('modal-target-subtitle').innerHTML = `目前積分：<span class="text-yellow-400 font-bold">${student.score}</span> 分`;
+            showScoreModal();
+        }
+
+        function openScoreModalForGroup(groupIdx) {
+            if (!isAuthorizedUser()) return;
+            const group = appState.groups[groupIdx];
+            if (!group) return;
+
+            const ids = group.students.map(s => s.id);
+            if (ids.length === 0) {
+                showToast('此組別目前沒有學生名單！', 'warning');
+                return;
+            }
+
+            currentModalTarget = { type: 'group', groupIdx, studentIds: ids };
+            document.getElementById('modal-target-badge').textContent = `整組同步加扣分 (共 ${ids.length} 人)`;
+            document.getElementById('modal-target-title').textContent = group.name;
+            document.getElementById('modal-target-subtitle').innerHTML = `目前全組總分：<span class="text-yellow-400 font-bold">${getGroupTotal(group)}</span> 分（每人將同步加減相同分數）`;
+            showScoreModal();
+        }
+
+        function openScoreModalForSelected() {
+            if (!isAuthorizedUser() || selectedStudentIds.size === 0) return;
+            const ids = Array.from(selectedStudentIds);
+            const all = getAllStudentsWithGroup();
+            const names = ids.map(id => all.find(s => s.id === id)?.name).filter(Boolean);
+
+            currentModalTarget = { type: 'multi', studentIds: ids };
+            document.getElementById('modal-target-badge').textContent = `多選批次計分 (共 ${ids.length} 人)`;
+            document.getElementById('modal-target-title').textContent = names.slice(0, 3).join('、') + (names.length > 3 ? ` 等 ${names.length} 人` : '');
+            document.getElementById('modal-target-subtitle').textContent = '選取的每位同學都將同步加減相同分數';
+            showScoreModal();
+        }
+
+        function showScoreModal() {
+            const modal = document.getElementById('score-modal');
+            const input = document.getElementById('custom-score-input');
+            const err = document.getElementById('custom-score-error');
+            input.value = '';
+            err.classList.add('hidden');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            setTimeout(() => input.focus(), 50);
+        }
+
+        function closeScoreModal() {
+            const modal = document.getElementById('score-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            currentModalTarget = null;
+        }
+
+        function handleCustomScoreKey(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                applyCustomScore(1);
+            } else if (e.key === 'Escape') {
+                closeScoreModal();
+            }
+        }
+
+        function applyCustomScore(sign) {
+            const input = document.getElementById('custom-score-input');
+            const err = document.getElementById('custom-score-error');
+            const val = parseInt(input.value, 10);
+
+            if (isNaN(val) || val === 0 || Math.abs(val) > 50) {
+                err.classList.remove('hidden');
+                input.focus();
+                return;
+            }
+            err.classList.add('hidden');
+            const finalDelta = val < 0 ? val : val * sign;
+            applyScore(finalDelta);
+            input.value = '';
+        }
+
+        function applyScore(delta) {
+            if (!isAuthorizedUser()) {
+                showToast('權限不足，請先登入授權帳號！', 'error');
+                closeScoreModal();
+                return;
+            }
+            if (!currentModalTarget || !currentModalTarget.studentIds || currentModalTarget.studentIds.length === 0) return;
+
+            const targetSet = new Set(currentModalTarget.studentIds);
+            const affectedNames = [];
+
+            appState.groups.forEach(group => {
+                group.students.forEach(student => {
+                    if (targetSet.has(student.id)) {
+                        student.score = (Number(student.score) || 0) + delta;
+                        affectedNames.push(student.name);
+                    }
+                });
+            });
+
+            // 產生操作紀錄標籤
+            let label = '';
+            if (currentModalTarget.type === 'group') {
+                const gName = appState.groups[currentModalTarget.groupIdx]?.name || '整組';
+                label = `【整組】${gName} (${affectedNames.length}人)`;
+            } else if (currentModalTarget.type === 'multi') {
+                label = `【多選】${affectedNames.slice(0, 2).join('、')}${affectedNames.length > 2 ? ` 等${affectedNames.length}人` : ''}`;
+            } else {
+                label = affectedNames[0] || '學生';
+            }
+
+            const now = new Date();
+            const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+            appState.logs.unshift({
+                id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+                time: timeStr,
+                label,
+                delta,
+                studentIds: [...currentModalTarget.studentIds],
+                operator: currentUserEmail || ''
+            });
+
+            saveState();
+            renderAll();
+
+            // 觸發分數跳動與浮動提示動畫
+            currentModalTarget.studentIds.forEach(id => {
+                const scoreEl = document.getElementById(`student-score-${id}`);
+                const cardEl = document.getElementById(`student-card-${id}`);
+                if (scoreEl) {
+                    scoreEl.classList.remove('animate-score-pop');
+                    void scoreEl.offsetWidth;
+                    scoreEl.classList.add('animate-score-pop');
+                }
+                if (cardEl) {
+                    const badge = document.createElement('span');
+                    badge.className = `floating-badge right-3 top-1 font-black text-base ${delta >= 0 ? 'text-emerald-300' : 'text-rose-400'}`;
+                    badge.textContent = delta >= 0 ? `+${delta}` : `${delta}`;
+                    cardEl.appendChild(badge);
+                    setTimeout(() => badge.remove(), 850);
+                }
+            });
+
+            // 更新彈窗副標題即時分數
+            if (currentModalTarget.type === 'student') {
+                const st = getAllStudentsWithGroup().find(s => s.id === currentModalTarget.studentIds[0]);
+                if (st) {
+                    document.getElementById('modal-target-subtitle').innerHTML = `目前積分：<span class="text-yellow-400 font-bold">${st.score}</span> 分`;
+                }
+            } else if (currentModalTarget.type === 'group') {
+                const grp = appState.groups[currentModalTarget.groupIdx];
+                if (grp) {
+                    document.getElementById('modal-target-subtitle').innerHTML = `目前全組總分：<span class="text-yellow-400 font-bold">${getGroupTotal(grp)}</span> 分（每人將同步加減相同分數）`;
+                }
+            }
+
+            const keepOpen = document.getElementById('keep-modal-open')?.checked;
+            if (!keepOpen) {
+                closeScoreModal();
+            }
+        }
+
+        function undoLastAction() {
+            if (!isAuthorizedUser()) {
+                showToast('唯讀檢視模式無法執行復原！', 'warning');
+                return;
+            }
+            if (appState.logs.length === 0) return;
+
+            const lastLog = appState.logs.shift();
+            const targetSet = new Set(lastLog.studentIds || []);
+
+            appState.groups.forEach(group => {
+                group.students.forEach(student => {
+                    if (targetSet.has(student.id)) {
+                        student.score = (Number(student.score) || 0) - lastLog.delta;
+                    }
+                });
+            });
+
+            saveState();
+            renderAll();
+            showToast(`已復原：${lastLog.label} (${lastLog.delta >= 0 ? '+' : ''}${lastLog.delta} 分)`, 'info');
+        }
+
+        // ==================== 名單管理 ====================
+        function openRosterModal() {
+            if (!isAuthorizedUser()) {
+                showToast('唯讀檢視模式無法修改名單，請先登入授權帳號！', 'warning');
+                return;
+            }
+            appState.groups.forEach((group, idx) => {
+                const nameInput = document.getElementById(`edit-group-name-${idx}`);
+                const textarea = document.getElementById(`roster-textarea-${idx}`);
+                if (nameInput) nameInput.value = group.name;
+                if (textarea) textarea.value = group.students.map(s => s.name).join('\n');
+            });
+            updateRosterCounts();
+            const modal = document.getElementById('roster-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeRosterModal() {
+            const modal = document.getElementById('roster-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function updateRosterCounts() {
+            for (let i = 0; i < 4; i++) {
+                const ta = document.getElementById(`roster-textarea-${i}`);
+                const countEl = document.getElementById(`roster-count-${i}`);
+                if (ta && countEl) {
+                    const lines = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+                    countEl.textContent = `${lines.length} 人`;
+                }
+            }
+        }
+
+        function loadDemoRoster() {
+            DEFAULT_STATE.groups.forEach((g, idx) => {
+                const nameInput = document.getElementById(`edit-group-name-${idx}`);
+                const textarea = document.getElementById(`roster-textarea-${idx}`);
+                if (nameInput) nameInput.value = g.name;
+                if (textarea) textarea.value = g.students.map(s => s.name).join('\n');
+            });
+            updateRosterCounts();
+            showToast('已帶入預設四組名單 (19人)，請點擊「儲存名單設定」套用！', 'info');
+        }
+
+        function saveRosterChanges() {
+            // 建立舊學生姓名 -> 分數與ID的對照表，避免修改名單時誤洗掉既有同學分數
+            const existingMap = new Map();
+            appState.groups.forEach(g => {
+                g.students.forEach(s => {
+                    if (!existingMap.has(s.name)) {
+                        existingMap.set(s.name, { id: s.id, score: s.score });
+                    }
+                });
+            });
+
+            let idCounter = Date.now();
+            for (let i = 0; i < 4; i++) {
+                const gName = (document.getElementById(`edit-group-name-${i}`)?.value || `第${i + 1}組`).trim();
+                const rawLines = (document.getElementById(`roster-textarea-${i}`)?.value || '')
+                    .split('\n')
+                    .map(s => s.trim())
+                    .filter(Boolean);
+
+                const newStudents = rawLines.map(name => {
+                    if (existingMap.has(name)) {
+                        const prev = existingMap.get(name);
+                        existingMap.delete(name);
+                        return { id: prev.id, name, score: prev.score };
+                    }
+                    return { id: 's_' + (idCounter++), name, score: 0 };
+                });
+
+                appState.groups[i].name = gName;
+                appState.groups[i].students = newStudents;
+            }
+
+            selectedStudentIds.clear();
+            saveState();
+            renderAll();
+            closeRosterModal();
+            showToast('四組名單已更新並儲存！', 'success');
+        }
+
+        // ==================== 個人排行榜 ====================
+        function openLeaderboardModal() {
+            const listEl = document.getElementById('full-leaderboard-list');
+            const all = getAllStudentsWithGroup().sort((a, b) => b.score - a.score);
+
+            if (all.length === 0) {
+                listEl.innerHTML = '<p class="text-center text-slate-400 py-8">尚無學生資料</p>';
+            } else {
+                listEl.innerHTML = all.map((s, idx) => {
+                    const rank = idx + 1;
+                    let rankDisplay = `<span class="w-7 text-center font-bold text-slate-400 text-sm">${rank}</span>`;
+                    if (rank === 1) rankDisplay = `<span class="w-7 text-center text-lg">🥇</span>`;
+                    else if (rank === 2) rankDisplay = `<span class="w-7 text-center text-lg">🥈</span>`;
+                    else if (rank === 3) rankDisplay = `<span class="w-7 text-center text-lg">🥉</span>`;
+
+                    return `
+                        <div class="flex items-center justify-between bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5">
+                            <div class="flex items-center gap-3 min-w-0">
+                                ${rankDisplay}
+                                <span class="font-bold text-white text-base truncate">${escapeHTML(s.name)}</span>
+                                <span class="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-lg shrink-0">${escapeHTML(s.groupName)}</span>
+                            </div>
+                            <span class="font-black text-lg tabular-nums ${s.score > 0 ? 'text-yellow-300' : s.score < 0 ? 'text-rose-400' : 'text-slate-400'}">
+                                ${s.score} 分
+                            </span>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            const modal = document.getElementById('leaderboard-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeLeaderboardModal() {
+            const modal = document.getElementById('leaderboard-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        // ==================== 匯出成績、Excel 活頁簿建立與接續還原 ====================
+        function openExportModal() {
+            const lines = [];
+            const nowStr = new Date().toLocaleString('zh-TW');
+            lines.push(`【班級分組積分成績報表】匯出時間：${nowStr}`);
+            lines.push('========================================');
+            appState.groups.forEach(g => {
+                lines.push(`\n■ ${g.name}（總分：${getGroupTotal(g)} 分｜平均：${getGroupAverage(g)} 分）`);
+                g.students.forEach(s => {
+                    lines.push(`  - ${s.name}：${s.score} 分`);
+                });
+            });
+            document.getElementById('export-preview-text').value = lines.join('\n');
+
+            const modal = document.getElementById('export-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function closeExportModal() {
+            const modal = document.getElementById('export-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function copyExportText() {
+            const textarea = document.getElementById('export-preview-text');
+            textarea.select();
+            document.execCommand('copy');
+            const btnText = document.getElementById('copy-btn-text');
+            btnText.textContent = '已複製！';
+            showToast('已複製成績報表文字到剪貼簿', 'success');
+            setTimeout(() => { btnText.textContent = '複製文字'; }, 2000);
+        }
+
+        function downloadCSV() {
+            const rows = [['組別', '姓名', '個人積分']];
+            appState.groups.forEach(g => {
+                g.students.forEach(s => {
+                    rows.push([g.name, s.name, s.score]);
+                });
+            });
+            const csvContent = '\uFEFF' + rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `班級分組積分_${new Date().toISOString().slice(0, 10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('已下載 CSV 成績表', 'success');
+        }
+
+        function buildExcelWorkbook() {
+            if (typeof XLSX === 'undefined') return null;
+            const wb = XLSX.utils.book_new();
+            const nowStr = new Date().toLocaleString('zh-TW');
+
+            // 第 1 個工作表：總覽與全班明細
+            const summaryData = [
+                ['班級分組積分戰況總覽', '', '', `匯出時間：${nowStr}`],
+                [],
+                ['組別名稱', '組員人數', '全組總分', '組平均分']
+            ];
+            appState.groups.forEach(g => {
+                summaryData.push([g.name, g.students.length, getGroupTotal(g), Number(getGroupAverage(g))]);
+            });
+            summaryData.push([]);
+            summaryData.push(['全班個人積分明細（依組別排列）']);
+            summaryData.push(['組別', '姓名', '目前積分']);
+            appState.groups.forEach(g => {
+                g.students.forEach(s => {
+                    summaryData.push([g.name, s.name, Number(s.score) || 0]);
+                });
+            });
+            const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+            wsSummary['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 24 }];
+            XLSX.utils.book_append_sheet(wb, wsSummary, '總覽與全班明細');
+
+            // 第 2~5 個工作表：各組獨立分頁（含該組個人積分與該組歷次加減分紀錄）
+            appState.groups.forEach((g, idx) => {
+                const groupSheetData = [
+                    [`${g.name} 個人積分與歷次紀錄`],
+                    ['編號', '姓名', '目前積分']
+                ];
+                g.students.forEach((s, sIdx) => {
+                    groupSheetData.push([sIdx + 1, s.name, Number(s.score) || 0]);
+                });
+                groupSheetData.push(['', '全組總分', getGroupTotal(g)]);
+                groupSheetData.push(['', '組平均分', Number(getGroupAverage(g))]);
+                groupSheetData.push([]);
+                groupSheetData.push(['本組歷次加減分流水紀錄']);
+                groupSheetData.push(['時間', '對象說明', '加減分數', '操作帳號']);
+
+                const studentIdSet = new Set(g.students.map(s => s.id));
+                const groupLogs = appState.logs.filter(log =>
+                    (log.studentIds || []).some(id => studentIdSet.has(id))
+                );
+
+                if (groupLogs.length === 0) {
+                    groupSheetData.push(['-', '尚無加減分紀錄', 0, '-']);
+                } else {
+                    groupLogs.forEach(log => {
+                        groupSheetData.push([log.time, log.label, Number(log.delta) || 0, log.operator || '']);
+                    });
+                }
+
+                const wsGroup = XLSX.utils.aoa_to_sheet(groupSheetData);
+                wsGroup['!cols'] = [{ wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 24 }];
+                const safeSheetName = (g.name || `第${idx + 1}組`).replace(/[\\/?*[\]:]/g, '_').slice(0, 31);
+                XLSX.utils.book_append_sheet(wb, wsGroup, safeSheetName);
+            });
+
+            // 第 6 個工作表：全班歷次加減分紀錄
+            const logSheetData = [
+                ['序號', '時間', '對象說明', '加減分數', '操作帳號']
+            ];
+            appState.logs.forEach((log, idx) => {
+                logSheetData.push([
+                    appState.logs.length - idx,
+                    log.time,
+                    log.label,
+                    Number(log.delta) || 0,
+                    log.operator || ''
+                ]);
+            });
+            const wsLogs = XLSX.utils.aoa_to_sheet(logSheetData);
+            wsLogs['!cols'] = [{ wch: 8 }, { wch: 14 }, { wch: 30 }, { wch: 12 }, { wch: 24 }];
+            XLSX.utils.book_append_sheet(wb, wsLogs, '歷次加減分紀錄');
+
+            // 第 7 個工作表：系統接續存檔碼（供下次匯入或自動延用無損還原狀態）
+            const snapshotData = [
+                ['系統接續存檔快照（請勿手動修改此工作表內容，供系統自動還原進度使用）'],
+                [JSON.stringify(appState)]
+            ];
+            const wsSnapshot = XLSX.utils.aoa_to_sheet(snapshotData);
+            XLSX.utils.book_append_sheet(wb, wsSnapshot, '系統接續存檔碼');
+
+            return wb;
+        }
+
+        function downloadExcel() {
+            const wb = buildExcelWorkbook();
+            if (!wb) {
+                showToast('Excel 匯出模組尚未載入完成，請稍後再試！', 'error');
+                return;
+            }
+            const fileName = `班級分組積分_${new Date().toISOString().slice(0, 10)}.xlsx`;
+            XLSX.writeFile(wb, fileName);
+            showToast(`已成功匯出 Excel 檔案：${fileName}`, 'success');
+        }
+
+        function handleImportExcel(event) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const wb = XLSX.read(data, { type: 'array' });
+                    const success = applyWorkbookState(wb, false);
+                    if (success) {
+                        closeExportModal();
+                    } else {
+                        showToast('無法從此 Excel 辨識班級積分資料，請確認是否為本系統匯出的檔案！', 'error');
+                    }
+                } catch (err) {
+                    console.error('解析 Excel 失敗:', err);
+                    showToast('讀取 Excel 檔案失敗：' + err.message, 'error');
+                } finally {
+                    event.target.value = '';
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function applyWorkbookState(wb, silent) {
+            if (!wb || !wb.SheetNames) return false;
+
+            // 優先從「系統接續存檔碼」工作表無損還原完整狀態與歷史紀錄
+            if (wb.SheetNames.includes('系統接續存檔碼')) {
+                const ws = wb.Sheets['系統接續存檔碼'];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                const rawJson = rows?.[1]?.[0];
+                if (rawJson) {
+                    try {
+                        const parsed = JSON.parse(rawJson);
+                        if (parsed && Array.isArray(parsed.groups) && parsed.groups.length === 4) {
+                            appState.groups = parsed.groups;
+                            appState.logs = Array.isArray(parsed.logs) ? parsed.logs : [];
+                            if (Array.isArray(parsed.authorizedEmails) && parsed.authorizedEmails.length > 0) {
+                                appState.authorizedEmails = parsed.authorizedEmails;
+                            }
+                            saveState(true);
+                            renderAll();
+                            if (!silent) showToast('已從 Excel 成功還原四組分數與所有歷史紀錄！', 'success');
+                            return true;
+                        }
+                    } catch (e) {
+                        console.warn('快照解析失敗，改用工作表欄位解析:', e);
+                    }
+                }
+            }
+
+            // 備援：從各組工作表讀取姓名與分數
+            let matchedAny = false;
+            appState.groups.forEach((group, idx) => {
+                const sheetName = wb.SheetNames[idx + 1];
+                if (!sheetName) return;
+                const ws = wb.Sheets[sheetName];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                const newStudents = [];
+                for (let r = 2; r < rows.length; r++) {
+                    const row = rows[r];
+                    if (!row || !row[1] || row[1] === '全組總分' || row[1] === '組平均分') break;
+                    newStudents.push({
+                        id: `s_imp_${idx}_${r}`,
+                        name: String(row[1]).trim(),
+                        score: Number(row[2]) || 0
+                    });
+                }
+                if (newStudents.length > 0) {
+                    group.students = newStudents;
+                    matchedAny = true;
+                }
+            });
+
+            if (matchedAny) {
+                saveState(true);
+                renderAll();
+                if (!silent) showToast('已從 Excel 載入各組最新積分！', 'success');
+                return true;
+            }
+            return false;
+        }
+
+        function downloadSystemHTML() {
+            const currentHTML = document.documentElement.outerHTML;
+            const serializedState = JSON.stringify(appState, null, 12);
+            const updatedHTML = '<!DOCTYPE html>\n' + currentHTML.replace(
+                /const DEFAULT_STATE = \{[\s\S]*?\n        \};/,
+                `const DEFAULT_STATE = ${serializedState};`
+            );
+
+            const blob = new Blob([updatedHTML], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `classroom_score_tracker_${new Date().toISOString().slice(0, 10)}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('已下載包含最新名單、分數與授權白名單的完整系統網頁！', 'success');
+        }
+
+        // ==================== 授權 Email 權限控制與登入管理 ====================
+        function isEmailAuthorized(email) {
+            if (!email) return false;
+            const normalized = email.trim().toLowerCase();
+            return (appState.authorizedEmails || []).some(e => e.trim().toLowerCase() === normalized);
+        }
+
+        function isAuthorizedUser() {
+            return Boolean(currentUserEmail && isEmailAuthorized(currentUserEmail));
+        }
+
+        function updateAuthUI() {
+            const statusBadge = document.getElementById('auth-status-badge');
+            const subtitle = document.getElementById('header-subtitle');
+            const authBtn = document.getElementById('btn-auth');
+            const authBtnIcon = document.getElementById('btn-auth-icon');
+            const authBtnText = document.getElementById('btn-auth-text');
+
+            const multiBtn = document.getElementById('btn-toggle-multi');
+            const undoBtn = document.getElementById('btn-undo');
+            const rosterBtn = document.getElementById('btn-roster');
+
+            if (isAuthorizedUser()) {
+                statusBadge.className = 'text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1';
+                statusBadge.innerHTML = `<i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i><span>已授權計分中</span>`;
+                subtitle.textContent = `目前操作帳號：${currentUserEmail} • 點擊學生卡片或「整組加減分」即可快速計分`;
+
+                authBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-sm transition active:scale-95';
+                authBtnIcon.setAttribute('data-lucide', 'user-check');
+                authBtnText.textContent = currentUserEmail.split('@')[0];
+
+                multiBtn.classList.remove('hidden');
+                multiBtn.classList.add('flex');
+                undoBtn.classList.remove('hidden');
+                undoBtn.classList.add('flex');
+                rosterBtn.classList.remove('hidden');
+                rosterBtn.classList.add('flex');
+            } else {
+                isMultiSelectMode = false;
+                selectedStudentIds.clear();
+
+                statusBadge.className = 'text-xs bg-slate-800 text-slate-300 border border-slate-600 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1';
+                statusBadge.innerHTML = `<i data-lucide="eye" class="w-3.5 h-3.5 text-sky-400"></i><span>唯讀檢視模式</span>`;
+                subtitle.textContent = '目前為唯讀檢視模式 • 需使用授權 Email 登入才可進行加減分';
+
+                authBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-sm transition active:scale-95';
+                authBtnIcon.setAttribute('data-lucide', 'lock');
+                authBtnText.textContent = '管理員登入';
+
+                multiBtn.classList.add('hidden');
+                multiBtn.classList.remove('flex');
+                undoBtn.classList.add('hidden');
+                undoBtn.classList.remove('flex');
+                rosterBtn.classList.add('hidden');
+                rosterBtn.classList.remove('flex');
+            }
+
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function openAuthModal() {
+            const modal = document.getElementById('auth-modal');
+            const loginSec = document.getElementById('auth-login-section');
+            const manageSec = document.getElementById('auth-manage-section');
+            const errMsg = document.getElementById('auth-error-msg');
+            errMsg.classList.add('hidden');
+
+            if (isAuthorizedUser()) {
+                loginSec.classList.add('hidden');
+                manageSec.classList.remove('hidden');
+                document.getElementById('logged-in-email-display').textContent = currentUserEmail;
+                document.getElementById('authorized-emails-textarea').value = (appState.authorizedEmails || []).join('\n');
+            } else {
+                loginSec.classList.remove('hidden');
+                manageSec.classList.add('hidden');
+                const input = document.getElementById('login-email-input');
+                input.value = '';
+                setTimeout(() => input.focus(), 50);
+            }
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            if (window.lucide) lucide.createIcons();
+        }
+
+        function closeAuthModal() {
+            const modal = document.getElementById('auth-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function handleEmailLogin() {
+            const input = document.getElementById('login-email-input');
+            const errMsg = document.getElementById('auth-error-msg');
+            const email = (input.value || '').trim().toLowerCase();
+
+            if (!email || !isEmailAuthorized(email)) {
+                errMsg.classList.remove('hidden');
+                input.focus();
+                return;
+            }
+
+            currentUserEmail = email;
+            sessionStorage.setItem(AUTH_SESSION_KEY, email);
+            errMsg.classList.add('hidden');
+
+            closeAuthModal();
+            updateAuthUI();
+            renderAll();
+            showToast(`歡迎登入！已解鎖計分權限（${email}）`, 'success');
+        }
+
+        function handleLogout() {
+            currentUserEmail = null;
+            sessionStorage.removeItem(AUTH_SESSION_KEY);
+            closeAuthModal();
+            updateAuthUI();
+            renderAll();
+            showToast('已登出帳號，目前切換回「唯讀檢視模式」', 'info');
+        }
+
+        function saveAuthorizedEmails() {
+            const textarea = document.getElementById('authorized-emails-textarea');
+            const emails = (textarea.value || '')
+                .split('\n')
+                .map(e => e.trim().toLowerCase())
+                .filter(e => e.includes('@'));
+
+            if (emails.length === 0) {
+                showToast('請至少保留一組有效的授權 Email！', 'error');
+                return;
+            }
+
+            // 確保目前操作者不會把自己鎖在外面
+            if (currentUserEmail && !emails.includes(currentUserEmail)) {
+                emails.unshift(currentUserEmail);
+            }
+
+            appState.authorizedEmails = [...new Set(emails)];
+            saveState();
+            closeAuthModal();
+            showToast(`已更新授權白名單（共 ${appState.authorizedEmails.length} 組帳號）`, 'success');
+        }
+
+        // ==================== 通用工具函式與啟動 ====================
+        function escapeHTML(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+
+            const colors = {
+                success: 'bg-emerald-600/95 text-white border-emerald-400/50',
+                error: 'bg-rose-600/95 text-white border-rose-400/50',
+                warning: 'bg-amber-500/95 text-slate-950 border-amber-300',
+                info: 'bg-slate-800/95 text-slate-100 border-slate-600'
+            };
+
+            const toast = document.createElement('div');
+            toast.className = `px-4 py-2.5 rounded-2xl border shadow-2xl text-xs sm:text-sm font-bold backdrop-blur-md transition-all duration-300 transform translate-y-2 opacity-0 ${colors[type] || colors.info}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            });
+
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // 點擊 Modal 背景遮罩時自動關閉彈窗
+        ['score-modal', 'roster-modal', 'leaderboard-modal', 'export-modal', 'auth-modal'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('click', () => {
+                    el.classList.add('hidden');
+                    el.classList.remove('flex');
+                });
+            }
+        });
+
+        window.addEventListener('DOMContentLoaded', initApp);
+    </script>
+</body>
+</html>
