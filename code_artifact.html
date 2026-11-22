@@ -654,6 +654,8 @@
         let boundExcelHandle = null;
         let cachedExcelHandle = null;
         let excelSyncStatus = 'idle'; // idle | syncing | synced | error
+        let isGitHubPushing = false;
+        let hasPendingGitHubPush = false;
 
         function canUseNativeFilePicker() {
             try {
@@ -705,55 +707,81 @@
         async function pushExcelToGitHubSameFolder() {
             const cfg = getGitHubSyncConfig();
             if (!cfg || !cfg.token || !window.XLSX) return false;
+
+            // 若目前正在寫入 GitHub，先標記有待處理更新，等當前寫入完成後自動接續執行最新狀態，避免 SHA 衝突
+            if (isGitHubPushing) {
+                hasPendingGitHubPush = true;
+                return true;
+            }
+
+            isGitHubPushing = true;
+            excelSyncStatus = 'syncing';
+            updateExcelSyncUI();
+
             try {
-                excelSyncStatus = 'syncing';
-                updateExcelSyncUI();
+                const maxRetries = 3;
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    const wb = buildExcelWorkbook();
+                    const base64Content = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+                    const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}`;
 
-                const wb = buildExcelWorkbook();
-                const base64Content = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
-                const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${SHARED_EXCEL_FILENAME}`;
-
-                // 取得現有 scores.xlsx 的 sha（若已存在則為覆寫更新）
-                let sha = undefined;
-                const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(cfg.branch)}`, {
-                    headers: {
-                        'Authorization': `Bearer ${cfg.token}`,
-                        'Accept': 'application/vnd.github+json'
+                    // 取得最新 scores.xlsx 的 sha（加入時間戳避免瀏覽器快取舊 sha）
+                    let sha = undefined;
+                    const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(cfg.branch)}&t=${Date.now()}`, {
+                        cache: 'no-store',
+                        headers: {
+                            'Authorization': `Bearer ${cfg.token}`,
+                            'Accept': 'application/vnd.github+json'
+                        }
+                    });
+                    if (getRes.ok) {
+                        const existing = await getRes.json();
+                        sha = existing.sha;
                     }
-                });
-                if (getRes.ok) {
-                    const existing = await getRes.json();
-                    sha = existing.sha;
-                }
 
-                const putRes = await fetch(apiUrl, {
-                    method: 'PUT',
-                    headers: {
-                        'Authorization': `Bearer ${cfg.token}`,
-                        'Accept': 'application/vnd.github+json',
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        message: `自動更新 ${SHARED_EXCEL_FILENAME} (${new Date().toLocaleString('zh-TW')})`,
-                        content: base64Content,
-                        branch: cfg.branch,
-                        ...(sha ? { sha } : {})
-                    })
-                });
+                    const putRes = await fetch(apiUrl, {
+                        method: 'PUT',
+                        headers: {
+                            'Authorization': `Bearer ${cfg.token}`,
+                            'Accept': 'application/vnd.github+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            message: `自動更新 ${SHARED_EXCEL_FILENAME} (${new Date().toLocaleString('zh-TW')})`,
+                            content: base64Content,
+                            branch: cfg.branch,
+                            ...(sha ? { sha } : {})
+                        })
+                    });
 
-                if (!putRes.ok) {
+                    if (putRes.ok) {
+                        excelSyncStatus = 'synced';
+                        updateExcelSyncUI();
+                        return true;
+                    }
+
+                    // 若發生 409 SHA 版本衝突，自動等待 400ms 後抓取最新 SHA 重試
+                    if (putRes.status === 409 && attempt < maxRetries) {
+                        await new Promise(r => setTimeout(r, 400));
+                        continue;
+                    }
+
                     const errData = await putRes.json().catch(() => ({}));
                     throw new Error(errData.message || `GitHub API 回應錯誤 (${putRes.status})`);
                 }
-                excelSyncStatus = 'synced';
-                updateExcelSyncUI();
-                return true;
+                return false;
             } catch (err) {
                 console.error('直接更新同層 GitHub scores.xlsx 失敗:', err);
                 excelSyncStatus = 'error';
                 updateExcelSyncUI();
                 showToast(`寫入 scores.xlsx 失敗：${err.message}`, 'error');
                 return false;
+            } finally {
+                isGitHubPushing = false;
+                if (hasPendingGitHubPush) {
+                    hasPendingGitHubPush = false;
+                    setTimeout(() => pushExcelToGitHubSameFolder(), 250);
+                }
             }
         }
 
